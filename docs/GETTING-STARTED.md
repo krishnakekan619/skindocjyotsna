@@ -48,7 +48,7 @@ powershell -ExecutionPolicy Bypass -File setup\windows\Prepare-OfflineBundle.ps1
 
 ### W3. Install the developer tools (10–25 min, no internet needed)
 1. Open the bundle folder and double-click **`Install-DevPC.cmd`**.
-   - Tools you **already have** (Node ≥ 24, Git ≥ 2.40, Rust ≥ 1.90) are kept, not reinstalled.
+   - Tools you **already have** (Node ≥ 24, Git ≥ 2.40, Rust ≥ 1.95) are kept, not reinstalled.
    - For a **production build PC**, use **`Install-BuildPC.cmd`** instead. Node.js and Rust must then match `tools.lock` exactly.
 2. Click **Yes** at the administrator prompt.
 3. Wait. A Visual Studio progress window appears for a while. That's normal.

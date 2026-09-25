@@ -13,7 +13,7 @@ Both steps are safe to repeat. Files and tools that are already correct are skip
 
 | Role | Double-click | Existing tools | Installs |
 |---|---|---|---|
-| **Dev** (developer PC) | `Install-DevPC.cmd` / `Install-DevMac.command` | **Kept** if at least the minimum version in `versions.env` (Node ≥ 24.0.0, Rust ≥ 1.90.0, Git ≥ 2.40.0) | Anything missing or too old, at the locked version |
+| **Dev** (developer PC) | `Install-DevPC.cmd` / `Install-DevMac.command` | **Kept** if at least the minimum version in `versions.env` (Node ≥ 24.0.0, Rust ≥ 1.95.0, Git ≥ 2.40.0) | Anything missing or too old, at the locked version |
 | **Build** (makes production installers) | `Install-BuildPC.cmd` / `Install-BuildMac.command` | **Node.js and Rust must match `tools.lock` exactly.** If a different version is installed, setup stops and explains why. It is never replaced silently | Anything missing, at the locked version |
 | **Clinic** (runs the app) | `Install-ClinicPC.cmd` / `Install-ClinicMac.command` | — | Windows: WebView2 (if missing) + the SkinDocJyotsna app. macOS: the app |
 
