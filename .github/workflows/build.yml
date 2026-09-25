@@ -124,6 +124,13 @@ jobs:
           path: release-files
           merge-multiple: true
 
+      # The Cargo.lock this build resolved (BUILDINFO's CARGO_LOCK_SHA256 refers to it), kept with
+      # the release so the exact Rust crate versions stay traceable.
+      - uses: actions/download-artifact@v4
+        with:
+          name: Cargo.lock
+          path: release-files
+
       - name: Verify installers against their .sha256 files
         working-directory: release-files
         run: |
@@ -131,7 +138,7 @@ jobs:
           count=0
           for sum in *.sha256; do sha256sum --check "$sum"; count=$((count + 1)); done
           [ "$count" -ge 2 ] || { echo "::error::Expected a Windows and a macOS installer, found $count"; exit 1; }
-          sha256sum *.exe *.dmg > SHA256SUMS
+          sha256sum *.exe *.dmg Cargo.lock > SHA256SUMS
           cat SHA256SUMS
 
       - name: Create release
@@ -153,4 +160,4 @@ jobs:
             echo "The installers are not code-signed yet: Windows SmartScreen and macOS Gatekeeper will ask for confirmation on first run."
           } > NOTES.md
           gh release create "$GITHUB_REF_NAME" --title "SkinDocJyotsna $GITHUB_REF_NAME" --notes-file NOTES.md --verify-tag \
-            *.exe *.dmg *.sha256 BUILDINFO-*.txt SHA256SUMS
+            *.exe *.dmg *.sha256 BUILDINFO-*.txt SHA256SUMS Cargo.lock
