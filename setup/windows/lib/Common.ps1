@@ -165,6 +165,52 @@ function Add-MachinePath([string]$Directory) {
     Update-SessionPath
 }
 
+# Adds a folder to the CURRENT USER's PATH (no admin needed). Entries containing $ReplaceLike
+# (e.g. an older per-user Rust) are removed first, so only one version is on PATH.
+function Add-UserPath([string]$Directory, [string]$ReplaceLike = '') {
+    $current = [Environment]::GetEnvironmentVariable('Path', 'User')
+    $entries = @($current -split ';' | Where-Object { $_ -and $_ -ne $Directory -and -not ($ReplaceLike -and $_ -like "*$ReplaceLike*") })
+    [Environment]::SetEnvironmentVariable('Path', ((@($Directory) + $entries) -join ';'), 'User')
+    Write-Ok "Added to your PATH: $Directory"
+    Update-SessionPath
+}
+
+# Installs Rust from the official standalone archive (rust-<ver>-x86_64-pc-windows-msvc.tar.xz)
+# without msiexec or admin rights: unpacks only the parts needed to build (compiler, cargo,
+# Windows standard library, clippy, rustfmt) and merges them into $Prefix. Returns $Prefix\bin.
+function Install-RustArchive([string]$Archive, [string]$Prefix) {
+    $top = (Split-Path -Leaf $Archive) -replace '\.tar\.xz$', ''
+    $components = @('rustc', 'cargo', 'rust-std-x86_64-pc-windows-msvc', 'clippy-preview', 'rustfmt-preview')
+    $work = "$Prefix.unpacking"
+    Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Path $work -Force | Out-Null
+    try {
+        # Windows' own tar (bsdtar) reads .tar.xz; only the listed components are extracted.
+        & "$env:SystemRoot\System32\tar.exe" -xJf $Archive -C $work @($components | ForEach-Object { "$top/$_" })
+        if ($LASTEXITCODE -ne 0) { throw "Unpacking $Archive failed (tar exit $LASTEXITCODE)." }
+        Remove-Item -LiteralPath $Prefix -Recurse -Force -ErrorAction SilentlyContinue
+        New-Item -ItemType Directory -Path $Prefix -Force | Out-Null
+        foreach ($component in $components) {
+            $source = Join-Path $work "$top\$component"
+            if (-not (Test-Path -LiteralPath $source)) { throw "Component '$component' not found in $Archive." }
+            # Same result as the archive's install.sh: every file except manifest.in, merged into $Prefix.
+            foreach ($file in Get-ChildItem -LiteralPath $source -Recurse -File | Where-Object { $_.Name -ne 'manifest.in' }) {
+                $target = Join-Path $Prefix $file.FullName.Substring($source.Length + 1)
+                $targetDir = Split-Path -Parent $target
+                if (-not (Test-Path -LiteralPath $targetDir)) { New-Item -ItemType Directory -Path $targetDir -Force | Out-Null }
+                Copy-Item -LiteralPath $file.FullName -Destination $target -Force
+            }
+        }
+    } finally {
+        Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    $bin = Join-Path $Prefix 'bin'
+    foreach ($exe in 'rustc.exe', 'cargo.exe') {
+        if (-not (Test-Path -LiteralPath (Join-Path $bin $exe))) { throw "$exe missing after unpacking Rust into $Prefix." }
+    }
+    return $bin
+}
+
 $global:ClinicSetupRebootRequired = $false
 
 # Runs an installer and waits. Arguments containing spaces are quoted automatically.
@@ -178,7 +224,8 @@ function Invoke-Installer([string]$FilePath, [string[]]$Arguments, [int[]]$Succe
         $manual = if ($package) { "Install it manually by double-clicking:`n      $package`n    then run this script again (it will detect it and continue)." } else { 'Run the installer manually, then run this script again.' }
         throw ("Windows blocked starting $(Split-Path -Leaf $FilePath): $($_.Exception.Message)`n" +
             "    On company-managed PCs, security software (Defender attack-surface rules, EDR/AppLocker) often stops scripts from launching installers.`n" +
-            "    Check Windows Security > Protection history for a blocked item, or ask IT to allow it.`n    $manual")
+            "    Check Windows Security > Protection history for a blocked item, or ask IT to allow it.`n    $manual`n" +
+            "    For Rust there is also a no-installer option: Install-DevPC-NoAdmin.cmd / Install-BuildPC-NoAdmin.cmd.")
     }
     if ($SuccessCodes -notcontains $proc.ExitCode) {
         throw "$(Split-Path -Leaf $FilePath) failed with exit code $($proc.ExitCode)"

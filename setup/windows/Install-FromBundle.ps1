@@ -30,6 +30,12 @@
 .PARAMETER Force
     Reinstall the locked versions even when suitable versions are already present.
 
+.PARAMETER NoAdmin
+    For PCs without admin rights, or where security software blocks installers (msiexec).
+    Never asks for elevation. Rust is unpacked from the standalone archive into
+    %LOCALAPPDATA%\Programs\Rust\<version> and added to YOUR PATH (same locked version).
+    Other tools must already be installed; if one is missing, setup explains what IT must install.
+
 .EXAMPLE
     .\Install-FromBundle.ps1 -Role Build
 .EXAMPLE
@@ -41,6 +47,7 @@ param(
     [ValidateSet('Dev', 'Build', 'Clinic')][string]$Role = 'Dev',
     [switch]$VerifyOnly,
     [switch]$Force,
+    [switch]$NoAdmin,
     [switch]$PauseAtEnd   # used internally when the script re-launches itself elevated
 )
 
@@ -52,7 +59,8 @@ $BundleDir = [IO.Path]::GetFullPath($BundleDir)
 if ($BundleDir.EndsWith('\')) { $BundleDir = $BundleDir + '.' }   # "E:\" would break argument quoting
 
 # ---- Elevation -------------------------------------------------------------------------------
-if (-not $VerifyOnly -and -not (Test-IsAdmin)) {
+if ($NoAdmin -and $Role -eq 'Clinic') { Write-Fail '-NoAdmin is for Dev/Build PCs. Installing the app on a clinic PC needs admin rights.'; exit 1 }
+if (-not $VerifyOnly -and -not $NoAdmin -and -not (Test-IsAdmin)) {
     Write-Host 'Administrator rights are needed to install software. Windows will ask for permission...'
     $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"",
         '-BundleDir', "`"$BundleDir`"", '-Role', $Role, '-PauseAtEnd')
@@ -101,10 +109,19 @@ try {
         }
     }
 
+    # In -NoAdmin mode only Rust can be installed (per user). Anything else missing needs IT.
+    function Assert-CanInstall([string]$Name) {
+        if ($NoAdmin) {
+            throw ("$Name is missing or too old, and installing it needs administrator rights. " +
+                "Ask IT to install $Name (the installer is in this bundle's installers folder), then run this again.")
+        }
+    }
+
     function Install-WebView2 {
         Write-Step 'Microsoft Edge WebView2 Runtime'
         $installed = Get-WebView2Version
         if ($installed -and -not $Force) { Write-Ok "Using the installed WebView2 ($installed)"; return }
+        Assert-CanInstall 'WebView2 Runtime'
         $exe = Join-Path $BundleDir "installers\$($manifest['WEBVIEW2_FILE'])"
         Assert-Authenticode $exe '*Microsoft Corporation*'
         [void](Invoke-Installer $exe @('/silent', '/install'))
@@ -114,6 +131,7 @@ try {
     function Install-Git {
         Write-Step "Git (locked $($manifest['GIT_VERSION']), minimum $($manifest['GIT_MIN_VERSION']))"
         if (-not (Test-NeedsInstall 'Git' (Get-ToolVersion 'git') $manifest['GIT_VERSION'] $manifest['GIT_MIN_VERSION'] $false)) { return }
+        Assert-CanInstall 'Git'
         $exe = Join-Path $BundleDir "installers\$($manifest['GIT_FILE'])"
         Assert-Authenticode $exe $null
         [void](Invoke-Installer $exe @('/VERYSILENT', '/NORESTART', '/NOCANCEL', '/SP-', '/SUPPRESSMSGBOXES', '/CLOSEAPPLICATIONS'))
@@ -124,6 +142,7 @@ try {
     function Install-Node {
         Write-Step "Node.js (locked v$($manifest['NODE_VERSION']), minimum v$($manifest['NODE_MIN_VERSION']))"
         if (-not (Test-NeedsInstall 'Node.js' (Get-ToolVersion 'node' @('-v')) $manifest['NODE_VERSION'] $manifest['NODE_MIN_VERSION'] $true)) { return }
+        Assert-CanInstall 'Node.js'
         $msi = Join-Path $BundleDir "installers\$($manifest['NODE_FILE'])"
         [void](Invoke-Installer 'msiexec.exe' @('/i', $msi, '/qn', '/norestart', '/l*v', (Join-Path $logDir 'node-msi.log')))
         Update-SessionPath
@@ -134,6 +153,7 @@ try {
         Write-Step 'Visual Studio Build Tools: MSVC x64 compiler + Windows 11 SDK'
         $existing = Get-VcToolsPath
         if ($existing -and (Get-WindowsSdkVersion) -and -not $Force) { Write-Ok "Using the installed Build Tools ($existing)"; return }
+        Assert-CanInstall 'Visual Studio Build Tools'
         if (-not $manifest['VS_LAYOUT_DIR']) { throw 'This bundle was prepared with -SkipBuildTools, so it cannot set up a developer or build PC.' }
         $layout = Join-Path $BundleDir $manifest['VS_LAYOUT_DIR']
         $boot = @('vs_BuildTools.exe', 'vs_buildtools.exe', 'vs_setup.exe') |
@@ -152,6 +172,16 @@ try {
     function Install-Rust {
         Write-Step "Rust (locked $($manifest['RUST_VERSION']), minimum $($manifest['RUST_MIN_VERSION']))"
         if (-not (Test-NeedsInstall 'Rust' (Get-ToolVersion 'rustc' @('-V')) $manifest['RUST_VERSION'] $manifest['RUST_MIN_VERSION'] $true)) { return }
+        if ($NoAdmin) {
+            if (-not $manifest['RUST_ARCHIVE_FILE']) { throw 'This bundle has no Rust standalone archive. Run Prepare-OfflineBundle again to add it.' }
+            $archive = Join-Path $BundleDir "installers\$($manifest['RUST_ARCHIVE_FILE'])"
+            $prefix = Join-Path $env:LOCALAPPDATA "Programs\Rust\$($manifest['RUST_VERSION'])"
+            Write-Info "No-admin install: unpacking into $prefix (takes 1-3 minutes)"
+            $bin = Install-RustArchive $archive $prefix
+            Add-UserPath $bin 'Programs\Rust\'
+            Write-Ok "Installed ($(Get-ToolVersion 'rustc' @('-V'))) in $prefix"
+            return
+        }
         $msi = Join-Path $BundleDir "installers\$($manifest['RUST_FILE'])"
         [void](Invoke-Installer 'msiexec.exe' @('/i', $msi, '/qn', '/norestart', '/l*v', (Join-Path $logDir 'rust-msi.log')))
         Update-SessionPath

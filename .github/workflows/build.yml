@@ -1,18 +1,20 @@
-# Builds the Windows .exe and the macOS universal .dmg on GitHub-hosted machines.
-# Inactive until the project is pushed to a GitHub repository (DEC-009).
+# Compiles, tests and builds the Windows .exe and the macOS universal .dmg on GitHub-hosted
+# machines (DEC-021: the development laptop cannot run unsigned programs such as rustc).
 #
-# Before relying on this for releases (DevSecOps):
+# Node.js and Rust versions come from setup/windows/tools.lock, so CI uses the same pinned
+# releases as the offline setup bundles.
+#
+# Before relying on this for production releases (DevSecOps):
 #   - pin every third-party action to a full commit SHA instead of a tag
 #   - add code-signing secrets (Apple Developer ID / Windows certificate) when available (Q15)
-#   - for production installers, read NODE_VERSION / RUST_VERSION from setup/<os>/tools.lock into
-#     setup-node / rust-toolchain and run `build-release.mjs --release` (exact locked versions)
+#   - create setup/macos/tools.lock and switch to `build-release.mjs --release`
 name: build
 
 on:
-  workflow_dispatch:
   push:
+    branches: [main]
     tags: ['v*']
-  pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -39,16 +41,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Read pinned tool versions (setup/windows/tools.lock)
+        shell: bash
+        run: |
+          lock=setup/windows/tools.lock
+          echo "NODE_VERSION=$(grep '^NODE_VERSION=' "$lock" | cut -d= -f2 | tr -d '\r')" >> "$GITHUB_ENV"
+          echo "RUST_VERSION=$(grep '^RUST_VERSION=' "$lock" | cut -d= -f2 | tr -d '\r')" >> "$GITHUB_ENV"
+
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ env.RUST_VERSION }}
           targets: ${{ matrix.rust_targets }}
 
       - uses: Swatinem/rust-cache@v2
+
+      - name: Tool versions
+        shell: bash
+        run: node -v && npm -v && rustc -V && cargo -V
 
       - name: Install npm packages
         run: npm ci --no-audit --no-fund
@@ -71,3 +85,12 @@ jobs:
           path: dist/release/**
           retention-days: 14
           if-no-files-found: error
+
+      # Cargo.lock does not exist until the first successful resolve; keep it so it can be
+      # committed (every Rust crate then becomes pinned and traceable).
+      - uses: actions/upload-artifact@v4
+        if: always() && runner.os == 'Windows'
+        with:
+          name: Cargo.lock
+          path: Cargo.lock
+          if-no-files-found: ignore
