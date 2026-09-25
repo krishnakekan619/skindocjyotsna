@@ -131,6 +131,15 @@ jobs:
           name: Cargo.lock
           path: release-files
 
+      # Artifacts keep their folder layout (dist/release/<version>/...): flatten to one folder.
+      - name: Collect release files
+        working-directory: release-files
+        run: |
+          find . -mindepth 2 -type f -exec mv -n {} . \;
+          find . -mindepth 1 -type d -empty -delete
+          leftovers=$(find . -mindepth 2 -type f | wc -l)
+          [ "$leftovers" -eq 0 ] || { echo "::error::Duplicate file names between artifacts"; find . -mindepth 2 -type f; exit 1; }
+
       - name: Verify installers against their .sha256 files
         working-directory: release-files
         run: |
