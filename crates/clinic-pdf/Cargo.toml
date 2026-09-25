@@ -1,0 +1,17 @@
+[package]
+name = "clinic-pdf"
+description = "Receipt PDFs (A5), identical on Windows and macOS."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+clinic-core.workspace = true
+printpdf.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

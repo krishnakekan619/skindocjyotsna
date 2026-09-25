@@ -1,0 +1,15 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main-window",
+  "description": "What the main window's UI is allowed to call. Everything not listed is denied.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "allow-get-system-info",
+    "allow-list-backups",
+    "allow-create-backup",
+    "allow-restore-backup",
+    "allow-get-sample-receipt",
+    "allow-export-sample-receipt-pdf"
+  ]
+}

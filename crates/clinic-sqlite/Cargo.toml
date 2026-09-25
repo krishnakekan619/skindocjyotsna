@@ -1,0 +1,16 @@
+[package]
+name = "clinic-sqlite"
+description = "SQLite persistence: connection setup, migrations, integrity checks."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rusqlite.workspace = true
+rusqlite_migration.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

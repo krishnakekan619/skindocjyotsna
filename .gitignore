@@ -1,0 +1,32 @@
+# Build output and offline bundles (large, reproducible)
+dist/
+web-dist/
+target/
+node_modules/
+src-tauri/gen/
+
+# Machine-specific offline-build config written by scripts/offline-deps.mjs
+.cargo/config.toml
+
+# Setup script logs
+setup/**/logs/
+logs/
+*.log
+
+# Local databases and backups: they contain patient data and must never be committed
+*.db
+*.db-wal
+*.db-shm
+*.clinicbak
+
+# Secrets / local config
+.env
+.env.*
+!.env.example
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/*
+!.vscode/extensions.json
+.idea/

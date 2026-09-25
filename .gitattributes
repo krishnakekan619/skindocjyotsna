@@ -1,0 +1,13 @@
+# Normalise line endings so scripts work on both Windows and macOS.
+* text=auto eol=lf
+*.ps1 text eol=crlf
+*.psm1 text eol=crlf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.sh text eol=lf
+*.command text eol=lf
+*.png binary
+*.ico binary
+*.icns binary
+*.ttf binary
+*.db binary

@@ -1,0 +1,41 @@
+/* Receipt layout, shared by the on-screen preview and printing. Printing uses A5 portrait
+   to match the PDF. Only .print-area is printed; the rest of the app is hidden. */
+
+.receipt {
+  width: 128mm; /* A5 width minus 10 mm margins */
+  max-width: 100%;
+  margin: 0 auto;
+  padding: 6mm;
+  background: #fff;
+  color: #1a1a1a;
+  font-size: 9pt;
+  line-height: 1.45;
+  border: 1px solid #e2e8f0;
+}
+.receipt h2 { margin: 0; font-size: 14pt; text-align: center; }
+.receipt p { margin: 0; }
+.receipt__header { text-align: center; color: #555; font-size: 8pt; padding-bottom: 2mm; border-bottom: 0.5pt solid #9ca3af; }
+.receipt__banner { margin-top: 1.5mm !important; color: #b91c1c; font-weight: 700; font-size: 12pt; }
+.receipt__meta { display: flex; justify-content: space-between; padding-top: 2mm; }
+.receipt__client { padding-bottom: 2mm; }
+.receipt table { width: 100%; border-collapse: collapse; }
+.receipt th { text-align: left; font-weight: 700; }
+.receipt__items { border-top: 0.5pt solid #9ca3af; border-bottom: 0.5pt solid #9ca3af; }
+.receipt__items thead tr { border-bottom: 0.5pt solid #9ca3af; }
+.receipt__items td, .receipt__items th { padding: 0.6mm 0; vertical-align: top; }
+.receipt .num { text-align: right; white-space: nowrap; padding-left: 3mm; }
+.receipt__detail { font-size: 7.5pt; color: #6b7280; padding-left: 2mm; }
+.is-not-supplied .receipt__detail { color: #b91c1c; }
+.receipt__totals { width: 60% !important; margin-left: auto; margin-top: 1.5mm; border-bottom: 0.5pt solid #9ca3af; }
+.receipt__totals td { padding: 0.4mm 0; }
+.receipt__totals .is-total td { font-weight: 700; font-size: 11pt; padding-top: 1mm; }
+.receipt__footer { padding-top: 2mm; }
+.receipt__muted { color: #6b7280; font-size: 7.5pt; }
+.receipt__thanks { text-align: center; margin-top: 3mm !important; }
+
+@media print {
+  @page { size: A5 portrait; margin: 10mm; }
+  body * { visibility: hidden; }
+  .print-area, .print-area * { visibility: visible; }
+  .print-area { position: absolute; left: 0; top: 0; width: 100%; padding: 0; border: none; }
+}

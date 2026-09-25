@@ -1,0 +1,41 @@
+[workspace]
+resolver = "3"
+members = ["src-tauri", "crates/clinic-core", "crates/clinic-sqlite", "crates/clinic-pdf"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+license = "UNLICENSED"
+publish = false
+
+[workspace.dependencies]
+clinic-core = { path = "crates/clinic-core" }
+clinic-sqlite = { path = "crates/clinic-sqlite" }
+clinic-pdf = { path = "crates/clinic-pdf" }
+# default-features off: skips the HTML layout engine; we position text ourselves.
+printpdf = { version = "0.12", default-features = false }
+# "bundled" compiles SQLite into the app: same SQLite version on Windows and macOS, nothing to install.
+rusqlite = { version = "0.40", features = ["bundled", "backup"] }
+rusqlite_migration = "2.6"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tauri = { version = "2.11", features = [] }
+tauri-build = { version = "2.6", features = [] }
+tauri-plugin-single-instance = "2.4"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"
+
+[profile.release]
+# Smallest reasonable binary ("lightest possible application").
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

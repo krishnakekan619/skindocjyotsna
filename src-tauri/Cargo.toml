@@ -1,0 +1,27 @@
+[package]
+name = "skindocjyotsna"
+description = "SkinDocJyotsna desktop shell (Tauri)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "skindocjyotsna_lib"
+crate-type = ["rlib"]
+
+[build-dependencies]
+tauri-build.workspace = true
+
+[dependencies]
+clinic-pdf.workspace = true
+clinic-sqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tauri.workspace = true
+tauri-plugin-single-instance.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

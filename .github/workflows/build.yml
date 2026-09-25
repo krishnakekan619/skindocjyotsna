@@ -1,0 +1,73 @@
+# Builds the Windows .exe and the macOS universal .dmg on GitHub-hosted machines.
+# Inactive until the project is pushed to a GitHub repository (DEC-009).
+#
+# Before relying on this for releases (DevSecOps):
+#   - pin every third-party action to a full commit SHA instead of a tag
+#   - add code-signing secrets (Apple Developer ID / Windows certificate) when available (Q15)
+#   - for production installers, read NODE_VERSION / RUST_VERSION from setup/<os>/tools.lock into
+#     setup-node / rust-toolchain and run `build-release.mjs --release` (exact locked versions)
+name: build
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x64 (.exe)
+            os: windows-latest
+            rust_targets: ''
+          - name: macOS universal (.dmg)
+            os: macos-latest
+            rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_targets }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install npm packages
+        run: npm ci --no-audit --no-fund
+
+      - name: Check locks (stable releases, checksums)
+        run: node scripts/check-locks.mjs
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test and build installer
+        run: node scripts/build-release.mjs
+
+      - name: Dependency audit
+        run: npm audit --omit=dev --audit-level=high
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SkinDocJyotsna-${{ matrix.os }}
+          path: dist/release/**
+          retention-days: 14
+          if-no-files-found: error

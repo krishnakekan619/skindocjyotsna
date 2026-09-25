@@ -1,0 +1,42 @@
+{
+  "name": "skindocjyotsna",
+  "private": true,
+  "version": "0.1.0",
+  "description": "SkinDocJyotsna: local-first clinic inventory, billing and client management (Tauri + React + SQLite)",
+  "type": "module",
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "release": "node scripts/build-release.mjs --release",
+    "locks:check": "node scripts/check-locks.mjs",
+    "web:dev": "vite",
+    "web:build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:rust": "cargo test --workspace",
+    "tauri": "tauri",
+    "deps:vendor": "node scripts/offline-deps.mjs vendor",
+    "deps:restore": "node scripts/offline-deps.mjs restore",
+    "deps:online": "node scripts/offline-deps.mjs online"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "@emotion/react": "11.14.0",
+    "@emotion/styled": "11.14.1",
+    "@mui/material": "9.4.0",
+    "@tauri-apps/api": "2.11.1",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.11.5",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.1.1",
+    "typescript": "7.0.2",
+    "vite": "8.3.1",
+    "vitest": "5.0.1"
+  }
+}

@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- Placeholder app icon: teal rounded square with a white medical cross and leaf. Replace with the clinic logo. -->
+  <rect x="64" y="64" width="896" height="896" rx="200" fill="#0f766e"/>
+  <rect x="432" y="232" width="160" height="560" rx="40" fill="#ffffff"/>
+  <rect x="232" y="432" width="560" height="160" rx="40" fill="#ffffff"/>
+  <path d="M700 700 C700 610 770 560 850 560 C850 650 790 700 700 700 Z" fill="#99f6e4"/>
+</svg>
