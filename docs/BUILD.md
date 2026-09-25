@@ -61,12 +61,35 @@ node scripts/build-release.mjs
 
 Every build writes `dist/release/<version>/BUILDINFO-<os>.txt`, which records the tool versions, the installer's SHA-256, and the SHA-256 of `package-lock.json`, `Cargo.lock` and `tools.lock`. Any installer can be traced back to exactly what built it.
 
-## Releasing a new version
+## Releasing a new version (GitHub Actions: the normal way, DEC-021/DEC-022)
 
-1. Bump `"version"` in `package.json`. Tauri reads it from there, and so do the installer file names.
-2. Build with `--release` on a Build-role Windows PC and a Build-role Mac.
-3. Add both installers to the offline bundle: `--bundle <folder>`.
-4. Upgrade clinic PCs by double-clicking `Install-ClinicPC.cmd` / `Install-ClinicMac.command` again. The newest version in the bundle is installed; data is kept.
+1. Bump `"version"` in `package.json` (e.g. `0.2.0`) and commit.
+2. Tag and push:
+   ```bash
+   git tag v0.2.0
+   git push origin main v0.2.0
+   ```
+3. The **build** workflow builds and tests both installers. The **release** job then:
+   - checks that every installer matches its `.sha256`;
+   - publishes **GitHub Release `v0.2.0`** with the `.exe`, `.dmg`, `.sha256` files, `BUILDINFO` files and a combined `SHA256SUMS`.
+
+   Releases are **kept permanently**; build artifacts are deleted after 14 days. The run fails if the tag doesn't match `package.json`.
+4. Download the files from the repository's **Releases** page, while signed in, because the repository is private.
+
+### Getting a release onto a clinic PC
+
+**Online clinic PC:** run the `.exe` / open the `.dmg` directly.
+
+**Offline clinic PC, or the safest route:**
+1. Add the downloaded installer to the offline bundle. This checks it against its `.sha256` first:
+   ```bash
+   node scripts/import-release.mjs --bundle <bundle-folder> <downloaded .zip, folder or installer>
+   ```
+   You can give it a build-artifact `.zip` (e.g. `SkinDocJyotsna-windows-latest.zip`) or release files. Keep the `.sha256` next to each installer. Only installers for the bundle's platform are taken, and nothing changes if a checksum fails.
+2. On the clinic PC, double-click `Install-ClinicPC.cmd` / `Install-ClinicMac.command`. It re-checks every checksum, installs WebView2 if it's missing, and installs the **newest** app version in the bundle. **Clinic data is kept** on upgrade.
+
+### Local builds (alternative)
+`node scripts/build-release.mjs [--release] --bundle <folder>` builds on a Build-role PC and adds the result to a bundle in one step.
 
 ## Troubleshooting
 

@@ -9,6 +9,7 @@
     "build": "tauri build",
     "release": "node scripts/build-release.mjs --release",
     "locks:check": "node scripts/check-locks.mjs",
+    "import-release": "node scripts/import-release.mjs",
     "web:dev": "vite",
     "web:build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",

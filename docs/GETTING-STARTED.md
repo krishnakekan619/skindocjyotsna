@@ -132,10 +132,15 @@ node scripts\offline-deps.mjs vendor "E:\SkinDocJyotsna-OfflineBundle-win\projec
 From now on, the bundle can rebuild a developer PC and compile the app **with no internet at all**.
 
 ### W10. Install on a clinic PC (2 min)
-1. Put the installer into the bundle:
-   ```powershell
-   node scripts\build-release.mjs --skip-tests --bundle "E:\SkinDocJyotsna-OfflineBundle-win"
-   ```
+1. Put the installer into the bundle. Use **either**:
+   - **An installer from GitHub Actions** (the normal way; see `docs/BUILD.md` → Releasing). Download the build artifact `.zip` or the Release files, then run:
+     ```powershell
+     node scripts\import-release.mjs --bundle "E:\SkinDocJyotsna-OfflineBundle-win" "$HOME\Downloads\SkinDocJyotsna-windows-latest.zip"
+     ```
+   - **Or a local build:**
+     ```powershell
+     node scripts\build-release.mjs --skip-tests --bundle "E:\SkinDocJyotsna-OfflineBundle-win"
+     ```
 2. On the clinic PC: double-click **`Install-ClinicPC.cmd`** in the bundle and click **Yes** at the prompt. It installs WebView2 if it's missing, then SkinDocJyotsna into Program Files.
 3. Start **SkinDocJyotsna** from the Start menu.
 

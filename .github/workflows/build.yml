@@ -4,6 +4,11 @@
 # Node.js and Rust versions come from setup/windows/tools.lock, so CI uses the same pinned
 # releases as the offline setup bundles.
 #
+# RELEASES: pushing a tag vX.Y.Z (matching "version" in package.json) builds both installers and
+# publishes a GitHub Release with the .exe, .dmg, their .sha256 files, BUILDINFO files and a
+# combined SHA256SUMS. Unlike build artifacts (deleted after 14 days), releases are kept.
+#   git tag v0.1.0 && git push origin v0.1.0
+#
 # Before relying on this for production releases (DevSecOps):
 #   - pin every third-party action to a full commit SHA instead of a tag
 #   - add code-signing secrets (Apple Developer ID / Windows certificate) when available (Q15)
@@ -40,6 +45,16 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+
+      - name: Check tag matches package.json version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          expected="v$(node -p "require('./package.json').version")"
+          if [ "$GITHUB_REF_NAME" != "$expected" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match package.json version ($expected). Bump the version or fix the tag."
+            exit 1
+          fi
 
       - name: Read pinned tool versions (setup/windows/tools.lock)
         shell: bash
@@ -94,3 +109,48 @@ jobs:
           name: Cargo.lock
           path: Cargo.lock
           if-no-files-found: ignore
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write          # only this job may create releases
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: SkinDocJyotsna-*
+          path: release-files
+          merge-multiple: true
+
+      - name: Verify installers against their .sha256 files
+        working-directory: release-files
+        run: |
+          ls -la
+          count=0
+          for sum in *.sha256; do sha256sum --check "$sum"; count=$((count + 1)); done
+          [ "$count" -ge 2 ] || { echo "::error::Expected a Windows and a macOS installer, found $count"; exit 1; }
+          sha256sum *.exe *.dmg > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        working-directory: release-files
+        run: |
+          {
+            echo "## SkinDocJyotsna ${GITHUB_REF_NAME}"
+            echo
+            echo "Built from commit ${GITHUB_SHA} by workflow run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}."
+            echo
+            echo "| File | SHA-256 |"
+            echo "|---|---|"
+            awk '{print "| `" $2 "` | `" $1 "` |"}' SHA256SUMS
+            echo
+            echo "**Install:** Windows: run the \`.exe\` (or add it to an offline bundle with \`node scripts/import-release.mjs\`). macOS: open the \`.dmg\` and drag the app to Applications."
+            echo "The installers are not code-signed yet: Windows SmartScreen and macOS Gatekeeper will ask for confirmation on first run."
+          } > NOTES.md
+          gh release create "$GITHUB_REF_NAME" --title "SkinDocJyotsna $GITHUB_REF_NAME" --notes-file NOTES.md --verify-tag \
+            *.exe *.dmg *.sha256 BUILDINFO-*.txt SHA256SUMS
