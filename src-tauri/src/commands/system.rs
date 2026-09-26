@@ -62,7 +62,7 @@ pub fn get_system_info(state: State<'_, AppState>) -> Result<SystemInfo, Command
 #[tauri::command]
 pub fn get_health(state: State<'_, AppState>) -> Result<HealthReport, CommandError> {
     let session = state.session(Permission::ViewSystemInfo)?;
-    Ok(maintenance::health(&state.db()?, &session)?)
+    Ok(maintenance::health(&*state.db()?, &session)?)
 }
 
 #[derive(Serialize)]
@@ -99,7 +99,7 @@ pub fn list_backups(state: State<'_, AppState>) -> Result<Vec<BackupDto>, Comman
 #[tauri::command]
 pub fn create_backup(state: State<'_, AppState>) -> Result<BackupDto, CommandError> {
     let session = state.session(Permission::ManageBackups)?;
-    let file = maintenance::backup_now(&mut state.db()?, &session, &state.paths.backup_dir, &state.app_version, now())?;
+    let file = maintenance::backup_now(&mut *state.db()?, &session, &state.paths.backup_dir, &state.app_version, now())?;
     tracing::info!(file = %file.file_name, "manual backup created");
     Ok(file.into())
 }
@@ -129,7 +129,7 @@ fn backup_path(dir: &std::path::Path, file_name: &str) -> Result<PathBuf, Comman
 pub fn restore_backup(state: State<'_, AppState>, file_name: String) -> Result<RestoreResultDto, CommandError> {
     let session = state.session(Permission::ManageBackups)?;
     let path = backup_path(&state.paths.backup_dir, &file_name)?;
-    let outcome = maintenance::restore(&mut state.db()?, &session, &path, &state.paths.backup_dir, &state.app_version, now())?;
+    let outcome = maintenance::restore(&mut *state.db()?, &session, &path, &state.paths.backup_dir, &state.app_version, now())?;
     tracing::warn!(from = %outcome.restored_from.file_name, by = %session.username, "database restored from backup");
     state.sign_out()?;
     Ok(RestoreResultDto { restored_from: outcome.restored_from.into(), safety_backup: outcome.safety_backup.into() })

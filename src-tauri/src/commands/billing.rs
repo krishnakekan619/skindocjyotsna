@@ -13,13 +13,13 @@ use crate::state::{AppState, now};
 #[tauri::command]
 pub fn quote_bill(state: State<'_, AppState>, lines: Vec<BillLineInput>, discount: Discount, correcting_bill_id: Option<i64>) -> Result<Quote, CommandError> {
     let session = state.session(Permission::CreateBills)?;
-    Ok(billing::quote(&state.db()?, &session, &lines, discount, correcting_bill_id, now())?)
+    Ok(billing::quote(&*state.db()?, &session, &lines, discount, correcting_bill_id, now())?)
 }
 
 #[tauri::command]
 pub fn finalize_bill(state: State<'_, AppState>, input: BillInput) -> Result<BillDetail, CommandError> {
     let session = state.session(Permission::CreateBills)?;
-    let detail = billing::finalize(&mut state.db()?, &session, input, now())?;
+    let detail = billing::finalize(&mut *state.db()?, &session, input, now())?;
     tracing::info!(bill = %detail.bill.bill_no, "bill finalized");
     Ok(detail)
 }
@@ -27,44 +27,44 @@ pub fn finalize_bill(state: State<'_, AppState>, input: BillInput) -> Result<Bil
 #[tauri::command]
 pub fn list_bills(state: State<'_, AppState>, filter: BillFilter) -> Result<Vec<BillRow>, CommandError> {
     let session = state.session(Permission::CreateBills)?;
-    Ok(billing::list(&state.db()?, &session, filter)?)
+    Ok(billing::list(&*state.db()?, &session, filter)?)
 }
 
 #[tauri::command]
 pub fn get_bill(state: State<'_, AppState>, bill_id: i64) -> Result<BillDetail, CommandError> {
     let session = state.session(Permission::CreateBills)?;
-    Ok(billing::get(&state.db()?, &session, bill_id)?)
+    Ok(billing::get(&*state.db()?, &session, bill_id)?)
 }
 
 #[tauri::command]
 pub fn cancel_bill(state: State<'_, AppState>, bill_id: i64, reason: String) -> Result<BillDetail, CommandError> {
     let session = state.session(Permission::CancelBills)?;
-    Ok(billing::cancel(&mut state.db()?, &session, bill_id, &reason, now())?)
+    Ok(billing::cancel(&mut *state.db()?, &session, bill_id, &reason, now())?)
 }
 
 #[tauri::command]
 pub fn return_bill_items(state: State<'_, AppState>, input: ReturnInput) -> Result<ReturnResult, CommandError> {
     let session = state.session(Permission::ProcessReturns)?;
-    Ok(billing::return_items(&mut state.db()?, &session, input, now())?)
+    Ok(billing::return_items(&mut *state.db()?, &session, input, now())?)
 }
 
 #[tauri::command]
 pub fn correct_bill(state: State<'_, AppState>, input: CorrectionInput) -> Result<BillDetail, CommandError> {
     let session = state.session(Permission::CreateBills)?;
-    Ok(billing::correct(&mut state.db()?, &session, input, now())?)
+    Ok(billing::correct(&mut *state.db()?, &session, input, now())?)
 }
 
 #[tauri::command]
 pub fn get_receipt(state: State<'_, AppState>, bill_id: i64) -> Result<ReceiptData, CommandError> {
     let session = state.session(Permission::CreateBills)?;
-    Ok(billing::receipt(&state.db()?, &session, bill_id)?)
+    Ok(billing::receipt(&*state.db()?, &session, bill_id)?)
 }
 
 /// Saves the receipt as an A5 PDF in the app's exports folder and returns the file name.
 #[tauri::command]
 pub fn export_receipt_pdf(state: State<'_, AppState>, bill_id: i64) -> Result<String, CommandError> {
     let session = state.session(Permission::CreateBills)?;
-    let data = billing::receipt(&state.db()?, &session, bill_id)?;
+    let data = billing::receipt(&*state.db()?, &session, bill_id)?;
     let bytes = render_receipt_pdf(&data).map_err(|error| {
         tracing::error!(%error, "receipt PDF failed");
         CommandError::internal()
