@@ -5,7 +5,13 @@ import { useApp } from '../../app/AppContext';
 import { ErrorAlert, FormGrid, Loading, PageHeader, useLoader } from '../../components/common';
 import { t } from '../../i18n/en';
 
-const int = (text: string) => Number.parseInt(text.replace(/[^\d-]/g, '') || '0', 10);
+/** Whole non-negative number (the backend fields are unsigned). */
+const whole = (text: string) => Number.parseInt(text.replace(/\D/g, '') || '0', 10);
+/** Whole number that may be negative (UTC offset); a lone "-" counts as 0. */
+const signed = (text: string) => {
+  const n = Number.parseInt(text.replace(/[^\d-]/g, ''), 10);
+  return Number.isNaN(n) ? 0 : n;
+};
 
 /** Clinic details printed on receipts, plus billing and security settings (admin). */
 export function ClinicSettingsPage() {
@@ -55,10 +61,10 @@ export function ClinicSettingsPage() {
             <TextField label={t.settings.receiptFooter} value={draft.receiptFooter} onChange={(e) => set({ receiptFooter: e.target.value })} error={field === 'receiptFooter'} />
             <FormGrid>
               <TextField label={t.settings.invoicePrefix} value={draft.invoicePrefix} onChange={(e) => set({ invoicePrefix: e.target.value.toUpperCase() })} error={field === 'invoicePrefix'} />
-              <TextField label={t.settings.discountCap} value={draft.receptionistDiscountCapPercent} onChange={(e) => set({ receptionistDiscountCapPercent: int(e.target.value) })} error={field === 'receptionistDiscountCapPercent'} />
-              <TextField label={t.settings.idleLock} value={draft.idleLockMinutes} onChange={(e) => set({ idleLockMinutes: int(e.target.value) })} error={field === 'idleLockMinutes'} />
-              <TextField label={t.settings.returnWindow} value={draft.returnWindowDays} onChange={(e) => set({ returnWindowDays: int(e.target.value) })} error={field === 'returnWindowDays'} />
-              <TextField label={t.settings.utcOffset} value={draft.utcOffsetMinutes} onChange={(e) => set({ utcOffsetMinutes: int(e.target.value) })} error={field === 'utcOffsetMinutes'} />
+              <TextField label={t.settings.discountCap} value={draft.receptionistDiscountCapPercent} onChange={(e) => set({ receptionistDiscountCapPercent: whole(e.target.value) })} error={field === 'receptionistDiscountCapPercent'} />
+              <TextField label={t.settings.idleLock} value={draft.idleLockMinutes} onChange={(e) => set({ idleLockMinutes: whole(e.target.value) })} error={field === 'idleLockMinutes'} />
+              <TextField label={t.settings.returnWindow} value={draft.returnWindowDays} onChange={(e) => set({ returnWindowDays: whole(e.target.value) })} error={field === 'returnWindowDays'} />
+              <TextField label={t.settings.utcOffset} value={draft.utcOffsetMinutes} onChange={(e) => set({ utcOffsetMinutes: signed(e.target.value) })} error={field === 'utcOffsetMinutes'} />
             </FormGrid>
             <FormControlLabel control={<Checkbox checked={draft.roundToRupee} onChange={(e) => set({ roundToRupee: e.target.checked })} />} label={t.settings.roundToRupee} />
             <ErrorAlert error={error} />

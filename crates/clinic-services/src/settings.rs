@@ -152,8 +152,20 @@ pub fn update_clinic(db: &mut Database, actor: &Session, clinic: ClinicSettings,
     let clinic = clinic.normalized()?;
     db.write(|c| {
         verify_actor(c, actor)?;
+        let before = load(c)?;
         save(c, &clinic)?;
-        audit::record(c, now, Actor::from(actor), "SETTINGS_UPDATE", Some(("settings", CLINIC_KEY.to_string())), Some(json!({ "idleLockMinutes": clinic.idle_lock_minutes })))
+        // Before and after for the settings that change money, time or access rules.
+        let snapshot = |s: &ClinicSettings| {
+            json!({
+                "idleLockMinutes": s.idle_lock_minutes,
+                "receptionistDiscountCapPercent": s.receptionist_discount_cap_percent,
+                "roundToRupee": s.round_to_rupee,
+                "utcOffsetMinutes": s.utc_offset_minutes,
+                "returnWindowDays": s.return_window_days,
+                "invoicePrefix": s.invoice_prefix,
+            })
+        };
+        audit::record(c, now, Actor::from(actor), "SETTINGS_UPDATE", Some(("settings", CLINIC_KEY.to_string())), Some(json!({ "before": snapshot(&before), "after": snapshot(&clinic) })))
     })?;
     Ok(clinic)
 }

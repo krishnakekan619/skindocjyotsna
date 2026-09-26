@@ -120,6 +120,7 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
   const [error, setError] = useState<unknown>(null);
   const [approval, setApproval] = useState<{ username: string; password: string } | null>(null);
   const [needApproval, setNeedApproval] = useState(false);
+  const [approvalMessage, setApprovalMessage] = useState('');
   const [confirmClear, setConfirmClear] = useState(false);
   const [done, setDone] = useState<BillDetail | null>(null);
   const productInput = useRef<HTMLInputElement | null>(null);
@@ -146,11 +147,14 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
   }, [productText]);
 
   const discount = discountOf(discountKind, discountText);
-  const lineInputs: BillLineInput[] = useMemo(() => lines.map((l) => ({ productId: l.product.productId, qty: l.qty, notSuppliedQty: l.notSuppliedQty })), [lines]);
+  const lineInputs: BillLineInput[] = useMemo(
+    () => lines.filter((l) => l.qty + l.notSuppliedQty > 0).map((l) => ({ productId: l.product.productId, qty: l.qty, notSuppliedQty: l.notSuppliedQty })),
+    [lines],
+  );
 
   // All money arithmetic happens in Rust: the screen asks for a quote whenever the bill changes.
   useEffect(() => {
-    if (lines.length === 0 || discount === null) {
+    if (lineInputs.length === 0 || discount === null) {
       setQuote(null);
       setQuoteError(null);
       return;
@@ -174,7 +178,7 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
   const parsedPayments = paymentDrafts.map((p) => ({ ...p, paise: parseRupees(p.amount || '0') }));
   const paidPaise = parsedPayments.reduce((sum, p) => sum + (p.paise ?? 0), 0);
   const cashPaise = parsedPayments.filter((p) => p.method === 'CASH').reduce((sum, p) => sum + (p.paise ?? 0), 0);
-  const received = receivedText.trim() ? parseRupees(receivedText) : null;
+  const received = cashPaise > 0 && receivedText.trim() ? parseRupees(receivedText) : null;
   const changePaise = received !== null ? received - cashPaise : null;
 
   const focusProduct = () => window.setTimeout(() => productInput.current?.focus(), 0);
@@ -196,12 +200,12 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
     if (!picked || !Number.isInteger(qty) || qty <= 0) return;
     const alreadyInBill = lines.find((l) => l.product.productId === picked.productId)?.qty ?? 0;
     const available = Math.max(0, picked.availableQty - alreadyInBill);
-    if (qty <= available) addLine(picked, qty, 0);
+    if (correcting || qty <= available) addLine(picked, qty, 0);
     else setPartial({ product: { ...picked, availableQty: available }, requested: qty }); // DEC-007: ask
   };
 
   const setLineQty = (productId: number, qty: number) =>
-    setLines((current) => current.map((l) => (l.product.productId === productId ? { ...l, qty: Math.max(0, qty) } : l)).filter((l) => l.qty + l.notSuppliedQty > 0));
+    setLines((current) => current.map((l) => (l.product.productId === productId ? { ...l, qty: Math.max(0, qty) } : l)));
 
   const reset = () => {
     setBillKey(newBillKey());
@@ -219,7 +223,7 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
 
   const finalize = useCallback(
     async (withApproval: { username: string; password: string } | null) => {
-      if (busy || lines.length === 0 || !quote || discount === null) return;
+      if (busy || lineInputs.length === 0 || !quote || discount === null) return;
       setBusy(true); // disables Finalize at once: a double-click cannot submit twice (D10)
       setError(null);
       const input: BillInput = {
@@ -239,9 +243,11 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
         reset();
         setNeedApproval(false);
       } catch (e) {
-        if (isCommandError(e) && e.code === 'DISCOUNT_APPROVAL_REQUIRED') setNeedApproval(true);
-        else if (isCommandError(e) && e.field === 'approval') setError(e);
-        else setError(e);
+        if (isCommandError(e) && (e.code === 'DISCOUNT_APPROVAL_REQUIRED' || e.field === 'approval')) {
+          setApproval(null);
+          setApprovalMessage(e.message);
+          setNeedApproval(true);
+        } else setError(e);
       } finally {
         setBusy(false);
       }
@@ -250,7 +256,13 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
     [busy, lines, quote, discount, billKey, client, lineInputs, total, parsedPayments, received, note, correcting, reason],
   );
 
-  // F2: product search, F9: finalize.
+  const quoteFor = (productId: number) => quote?.lines.filter((q) => q.productId === productId) ?? [];
+  const paymentsOk = total === 0 || paidPaise === total;
+  const canFinalize =
+    !busy && lineInputs.length > 0 && quote !== null && paymentsOk && (!correcting || reason.trim().length >= 3) && (changePaise === null || changePaise >= 0);
+  const dialogOpen = partial !== null || needApproval || confirmClear || addingClient || done !== null;
+
+  // F2: product search, F9: finalize (same checks as the button, and not behind a dialog).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'F2') {
@@ -258,16 +270,13 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
         productInput.current?.focus();
       } else if (e.key === 'F9') {
         e.preventDefault();
-        void finalize(approval);
+        if (canFinalize && !dialogOpen) void finalize(approval);
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [finalize, approval]);
+  }, [finalize, approval, canFinalize, dialogOpen]);
 
-  const quoteFor = (productId: number) => quote?.lines.filter((q) => q.productId === productId) ?? [];
-  const paymentsOk = total === 0 || paidPaise === total;
-  const canFinalize = !busy && lines.length > 0 && quote !== null && paymentsOk && (!correcting || reason.trim().length >= 3) && (changePaise === null || changePaise >= 0);
 
   return (
     <>
@@ -508,7 +517,7 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
 
       {needApproval && (
         <ApprovalDialog
-          cap={quote ? Math.round(quote.discountRateBp / 100) : 0}
+          message={approvalMessage}
           onCancel={() => setNeedApproval(false)}
           onApprove={(credentials) => {
             setApproval(credentials);
@@ -553,7 +562,7 @@ function Row({ label, value, strong }: { label: string; value: string; strong?: 
   );
 }
 
-function ApprovalDialog({ cap, onApprove, onCancel }: { cap: number; onApprove: (c: { username: string; password: string }) => void; onCancel: () => void }) {
+function ApprovalDialog({ message, onApprove, onCancel }: { message: string; onApprove: (c: { username: string; password: string }) => void; onCancel: () => void }) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   return (
@@ -561,7 +570,7 @@ function ApprovalDialog({ cap, onApprove, onCancel }: { cap: number; onApprove: 
       <DialogTitle>{t.billing.approvalTitle}</DialogTitle>
       <DialogContent>
         <Stack spacing={2} sx={{ pt: 1 }}>
-          <DialogContentText>{t.billing.approvalText(cap)}</DialogContentText>
+          <DialogContentText>{message || t.billing.approvalTitle}</DialogContentText>
           <TextField label={t.account.username} value={username} onChange={(e) => setUsername(e.target.value)} autoFocus />
           <TextField label={t.account.password} type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
         </Stack>

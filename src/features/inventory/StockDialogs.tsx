@@ -146,7 +146,7 @@ export function AdjustDialog({ batch, onSaved, onClose }: { batch: BatchRow; onS
         <Button onClick={onClose} disabled={busy}>
           {t.common.cancel}
         </Button>
-        <Button variant="contained" onClick={save} disabled={busy || change === 0 || reason.trim().length < 3}>
+        <Button variant="contained" onClick={save} disabled={busy || change === 0 || (kind !== 'ADJUSTMENT' && change > 0) || reason.trim().length < 3}>
           {t.common.save}
         </Button>
       </DialogActions>

@@ -234,6 +234,16 @@ pub struct Quote {
     pub needs_approval: bool,
 }
 
+/// The discount rate checked against the receptionist cap. A percent discount is compared as
+/// typed (10% is exactly 10%, even if rounding to paise makes the amount a little higher);
+/// a rupee discount is converted to a rate of the subtotal.
+fn discount_rate(discount: Discount, totals: &pricing::BillTotals) -> u32 {
+    match discount {
+        Discount::Percent(bp) => bp.value(),
+        Discount::None | Discount::Amount(_) => pricing::discount_rate_bp(totals.discount, totals.subtotal),
+    }
+}
+
 fn needs_approval(actor: &Session, rate_bp: u32, clinic: &ClinicSettings) -> bool {
     actor.role != Role::Admin && rate_bp > clinic.receptionist_discount_cap_percent * 100
 }
@@ -282,7 +292,7 @@ pub fn quote(db: &Database, actor: &Session, lines: &[BillLineInput], discount: 
             });
         }
         let t = &priced.totals;
-        let rate = pricing::discount_rate_bp(t.discount, t.subtotal);
+        let rate = discount_rate(discount, t);
         Ok(Quote {
             lines: quote_lines,
             subtotal_paise: t.subtotal.value(),
@@ -304,6 +314,20 @@ pub struct BillDetail {
     pub bill: BillRow,
     pub items: Vec<BillItemRow>,
     pub payments: Vec<PaymentRow>,
+}
+
+/// The bill already saved under this idempotency key, if any. A repeat (double-click, retry
+/// after a timeout) comes from the same user for the same client and the same correction; a key
+/// reused for anything else is refused instead of silently returning an unrelated bill.
+fn bill_for_key(c: &Connection, key: &str, actor: &Session, client_id: Option<i64>, replaces: Option<i64>) -> Result<Option<i64>, ServiceError> {
+    let Some(bill_id) = repo::find_bill_id_by_key(c, key)? else {
+        return Ok(None);
+    };
+    let bill = repo::find_bill(c, bill_id)?.ok_or(ServiceError::NotFound("bill"))?;
+    if bill.created_by != actor.user_id || bill.client_id != client_id || bill.replaces_bill_id != replaces {
+        return Err(ServiceError::NotAllowed("This bill was already saved with different details. Clear the bill and start again.".into()));
+    }
+    Ok(Some(bill_id))
 }
 
 fn load_detail(c: &Connection, bill_id: i64) -> Result<BillDetail, ServiceError> {
@@ -347,7 +371,7 @@ fn finalize_in_tx(c: &Connection, actor: &Session, input: &BillInput, now: i64, 
     let priced = price(plan_items(c, &input.lines, today, &[])?, input.discount, &clinic)?;
     let totals = &priced.totals;
 
-    let rate = pricing::discount_rate_bp(totals.discount, totals.subtotal);
+    let rate = discount_rate(input.discount, totals);
     let approved_by = if needs_approval(actor, rate, &clinic) {
         Some(approve_discount(c, input.approval.as_ref(), clinic.receptionist_discount_cap_percent)?)
     } else {
@@ -366,6 +390,7 @@ fn finalize_in_tx(c: &Connection, actor: &Session, input: &BillInput, now: i64, 
     }
     let cash: i64 = input.payments.iter().filter(|p| p.method == "CASH").map(|p| p.amount_paise).sum();
     let change = match input.amount_received_paise {
+        Some(_) if cash == 0 => return Err(invalid("amountReceived", "Cash received can only be entered for a cash payment.")),
         Some(received) if received < cash => return Err(invalid("amountReceived", "Cash received is less than the cash payment.")),
         Some(received) => Some(received - cash),
         None => None,
@@ -447,7 +472,7 @@ pub fn finalize(db: &mut Database, actor: &Session, input: BillInput, now: i64) 
     validate_key(&input.idempotency_key)?;
     db.write(|c| {
         verify_actor(c, actor)?;
-        if let Some(existing) = repo::find_bill_id_by_key(c, &input.idempotency_key)? {
+        if let Some(existing) = bill_for_key(c, &input.idempotency_key, actor, input.client_id, None)? {
             return load_detail(c, existing); // double-click, retry or restart: same bill
         }
         let bill_id = finalize_in_tx(c, actor, &input, now, None)?;
@@ -566,7 +591,7 @@ pub fn correct(db: &mut Database, actor: &Session, input: CorrectionInput, now: 
     let reason = validate_reason(&input.reason)?.to_string();
     db.write(|c| {
         verify_actor(c, actor)?;
-        if let Some(existing) = repo::find_bill_id_by_key(c, &input.bill.idempotency_key)? {
+        if let Some(existing) = bill_for_key(c, &input.bill.idempotency_key, actor, input.bill.client_id, Some(input.original_bill_id))? {
             return load_detail(c, existing);
         }
         let original = load_detail(c, input.original_bill_id)?;
@@ -639,6 +664,11 @@ pub fn return_items(db: &mut Database, actor: &Session, input: ReturnInput, now:
     if input.lines.is_empty() || input.lines.iter().any(|l| l.qty <= 0) {
         return Err(invalid("lines", "Choose at least one item and a quantity to return."));
     }
+    // One line per bill item: the per-item limits below are checked against the saved bill.
+    let mut seen = std::collections::HashSet::new();
+    if !input.lines.iter().all(|l| seen.insert(l.bill_item_id)) {
+        return Err(invalid("lines", "Each item can appear only once in a return."));
+    }
     db.write(|c| {
         verify_actor(c, actor)?;
         let detail = load_detail(c, input.bill_id)?;
@@ -646,8 +676,10 @@ pub fn return_items(db: &mut Database, actor: &Session, input: ReturnInput, now:
             return Err(ServiceError::NotAllowed(format!("Bill {} is {}; items cannot be returned.", detail.bill.bill_no, detail.bill.status.to_lowercase())));
         }
         let (clinic, today) = clinic_today(c, now)?;
-        let age_days = (now - detail.bill.finalized_at) / 86_400;
-        if age_days > i64::from(clinic.return_window_days) && !actor.role.allows(Permission::CancelBills) {
+        // Calendar days in clinic time: a bill from the 1st with a 7-day window can be returned
+        // until the end of the 8th.
+        let last_day = local_date(detail.bill.finalized_at, clinic.utc_offset_minutes).add_days(i64::from(clinic.return_window_days));
+        if last_day < today && !actor.role.allows(Permission::CancelBills) {
             return Err(ServiceError::NotAllowed(format!("Returns more than {} days after the bill need an administrator.", clinic.return_window_days)));
         }
         let mut portions = Vec::new();
@@ -677,6 +709,27 @@ pub fn return_items(db: &mut Database, actor: &Session, input: ReturnInput, now:
             for ((share, take, restock), part) in takes.into_iter().zip(refunds) {
                 portions.push(ReturnPortion { item_id: item.id, item_batch_id: share.id, batch_id: share.batch_id, qty: take, refund: part, restock });
             }
+        }
+        // Line totals are before the bill's round-off. When this return completes the bill, refund
+        // exactly what is left of the amount collected, so refunds never exceed the bill total.
+        let completes_bill = detail.items.iter().all(|item| {
+            let now_returning: i64 = input.lines.iter().filter(|l| l.bill_item_id == item.id).map(|l| l.qty).sum();
+            item.returned_qty + now_returning == item.qty
+        });
+        if completes_bill {
+            let left_to_refund = detail.bill.total_paise - detail.bill.returned_paise;
+            let difference = left_to_refund - portions.iter().map(|p| p.refund).sum::<i64>();
+            if let Some(largest) = portions.iter_mut().max_by_key(|p| p.refund) {
+                largest.refund = (largest.refund + difference).max(0);
+            }
+        }
+        // Partial returns too: all refunds together never exceed what the client paid.
+        let mut excess = portions.iter().map(|p| p.refund).sum::<i64>() - (detail.bill.total_paise - detail.bill.returned_paise);
+        while excess > 0 {
+            let Some(largest) = portions.iter_mut().filter(|p| p.refund > 0).max_by_key(|p| p.refund) else { break };
+            let cut = excess.min(largest.refund);
+            largest.refund -= cut;
+            excess -= cut;
         }
         let refund_total: i64 = portions.iter().map(|p| p.refund).sum();
         let fy = today.financial_year();

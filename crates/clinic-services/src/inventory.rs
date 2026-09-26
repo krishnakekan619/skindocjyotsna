@@ -258,7 +258,13 @@ pub fn save_product(db: &mut Database, actor: &Session, input: ProductInput, now
         let sku = match input.sku.trim() {
             "" => match input.id {
                 Some(id) => repo::find_product(c, id, "0000-00-00")?.ok_or(ServiceError::NotFound("product"))?.sku,
-                None => format!("P-{:06}", next_number(c, "PRODUCT", "ALL")?),
+                // Skip numbers already taken by a hand-typed SKU, or every later save would fail.
+                None => loop {
+                    let candidate = format!("P-{:06}", next_number(c, "PRODUCT", "ALL")?);
+                    if !repo::sku_taken(c, &candidate, None)? {
+                        break candidate;
+                    }
+                },
             },
             given => given.to_uppercase(),
         };
@@ -329,8 +335,8 @@ pub fn stock_in(db: &mut Database, actor: &Session, input: StockInInput, now: i6
     if !(1..=1_000_000).contains(&input.qty) {
         return Err(invalid("qty", "Quantity must be at least 1."));
     }
-    if input.purchase_price_paise < 0 || input.selling_price_paise < 0 {
-        return Err(invalid("sellingPricePaise", "Prices cannot be negative."));
+    if input.purchase_price_paise < 0 || input.selling_price_paise < 0 || input.purchase_price_paise > 100_000_000 || input.selling_price_paise > 100_000_000 {
+        return Err(invalid("sellingPricePaise", "Prices must be between ₹0 and ₹10,00,000."));
     }
     if chars(input.note.trim()) > 200 {
         return Err(invalid("note", "Note must be at most 200 characters."));
@@ -361,6 +367,13 @@ pub fn stock_in(db: &mut Database, actor: &Session, input: StockInInput, now: i6
                     return Err(invalid(
                         "expiryDate",
                         &format!("Batch {batch_no} already exists with expiry {}.", existing.expiry_date.as_deref().unwrap_or("none")),
+                    ));
+                }
+                // Adding to a batch must not silently reprice the units already on the shelf.
+                if existing.selling_price_paise != input.selling_price_paise || existing.purchase_price_paise != input.purchase_price_paise {
+                    return Err(invalid(
+                        "sellingPricePaise",
+                        &format!("Batch {batch_no} is already in stock at different prices. Use the same prices, or a different batch number."),
                     ));
                 }
                 repo::update_batch_details(c, existing.id, expiry_text.as_deref(), input.supplier_id.or(existing.supplier_id), input.purchase_price_paise, input.selling_price_paise, now)?;

@@ -35,7 +35,7 @@ pub struct SystemInfo {
     database: DatabaseStatusDto,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_system_info(state: State<'_, AppState>) -> Result<SystemInfo, CommandError> {
     state.session(Permission::ViewSystemInfo)?;
     let status = state.db()?.status()?;
@@ -59,7 +59,7 @@ pub fn get_system_info(state: State<'_, AppState>) -> Result<SystemInfo, Command
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_health(state: State<'_, AppState>) -> Result<HealthReport, CommandError> {
     let session = state.session(Permission::ViewSystemInfo)?;
     Ok(maintenance::health(&*state.db()?, &session)?)
@@ -90,13 +90,13 @@ impl From<BackupFile> for BackupDto {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_backups(state: State<'_, AppState>) -> Result<Vec<BackupDto>, CommandError> {
     let session = state.session(Permission::ManageBackups)?;
     Ok(maintenance::backups(&session, &state.paths.backup_dir)?.into_iter().map(BackupDto::from).collect())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn create_backup(state: State<'_, AppState>) -> Result<BackupDto, CommandError> {
     let session = state.session(Permission::ManageBackups)?;
     let file = maintenance::backup_now(&mut *state.db()?, &session, &state.paths.backup_dir, &state.app_version, now())?;
@@ -125,18 +125,20 @@ fn backup_path(dir: &std::path::Path, file_name: &str) -> Result<PathBuf, Comman
 
 /// Restores a backup from the backups folder (by file name only). Everyone is signed out
 /// afterwards, because the restored data may have different accounts.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn restore_backup(state: State<'_, AppState>, file_name: String) -> Result<RestoreResultDto, CommandError> {
     let session = state.session(Permission::ManageBackups)?;
     let path = backup_path(&state.paths.backup_dir, &file_name)?;
-    let outcome = maintenance::restore(&mut *state.db()?, &session, &path, &state.paths.backup_dir, &state.app_version, now())?;
-    tracing::warn!(from = %outcome.restored_from.file_name, by = %session.username, "database restored from backup");
+    let result = maintenance::restore(&mut *state.db()?, &session, &path, &state.paths.backup_dir, &state.app_version, now());
+    // Sign out even if the restore failed part-way: the data may already have been swapped.
     state.sign_out()?;
+    let outcome = result?;
+    tracing::warn!(from = %outcome.restored_from.file_name, by = %session.username, "database restored from backup");
     Ok(RestoreResultDto { restored_from: outcome.restored_from.into(), safety_backup: outcome.safety_backup.into() })
 }
 
 /// Shows one of the app's folders in Explorer / Finder: "backups", "exports", "data" or "logs".
-#[tauri::command]
+#[tauri::command(async)]
 pub fn open_folder(state: State<'_, AppState>, folder: String) -> Result<(), CommandError> {
     state.session(Permission::ViewSystemInfo)?;
     let paths = &state.paths;

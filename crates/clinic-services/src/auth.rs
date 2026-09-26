@@ -17,7 +17,7 @@ use crate::settings::{self, ClinicSettings};
 use crate::{ServiceError, Session};
 
 /// A staff account as entered on a form. `pin` is optional everywhere.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NewAccount {
     pub username: String,
@@ -25,6 +25,18 @@ pub struct NewAccount {
     pub password: String,
     #[serde(default)]
     pub pin: Option<String>,
+}
+
+/// Never prints the password or PIN, even in a debug log.
+impl std::fmt::Debug for NewAccount {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NewAccount")
+            .field("username", &self.username)
+            .field("full_name", &self.full_name)
+            .field("password", &"<redacted>")
+            .field("pin", &self.pin.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
 }
 
 /// Validated account with hashes computed (hashing is slow, so it happens before the
@@ -255,18 +267,35 @@ pub fn unlock_with_password(db: &mut Database, user_id: i64, password: &str, now
 
 // ---- The signed-in user's own credentials ------------------------------------------------------
 
-fn check_current_password(user: &UserRecord, current: &str) -> Result<(), ServiceError> {
-    if verify_secret(current, &user.password_hash)? {
-        Ok(())
-    } else {
-        Err(invalid("currentPassword", "Your current password is not correct."))
+/// Wrong guesses count towards the same lockout as sign-in, so a signed-in screen cannot be
+/// used to try passwords without limit.
+fn check_current_password(db: &mut Database, user: &UserRecord, current: &str, now: i64) -> Result<(), ServiceError> {
+    if let Some(until) = user.locked_until.filter(|until| *until > now) {
+        return Err(ServiceError::AccountLocked { until });
     }
+    if verify_secret(current, &user.password_hash)? {
+        return Ok(());
+    }
+    let failures = user.failed_login_count + 1;
+    let locked_until = policy::login_lockout(failures, now);
+    db.write(|c| {
+        users::record_login_failure(c, user.id, if locked_until.is_some() { 0 } else { failures }, locked_until, now)?;
+        audit::record(c, now, Actor::User { id: user.id, username: &user.username }, "PASSWORD_CHECK_FAILED", None, Some(json!({ "failures": failures })))?;
+        if locked_until.is_some() {
+            audit::record(c, now, Actor::User { id: user.id, username: &user.username }, "ACCOUNT_LOCKED", Some(("user", user.id.to_string())), None)?;
+        }
+        Ok::<_, ServiceError>(())
+    })?;
+    Err(match locked_until {
+        Some(until) => ServiceError::AccountLocked { until },
+        None => invalid("currentPassword", "Your current password is not correct."),
+    })
 }
 
 pub fn change_own_password(db: &mut Database, actor: &Session, current: &str, new_password: &str, now: i64) -> Result<(), ServiceError> {
     actor.require(Permission::ManageOwnSecurity)?;
     let user = active_user(db, actor.user_id)?;
-    check_current_password(&user, current)?;
+    check_current_password(db, &user, current, now)?;
     policy::validate_password(new_password, &user.username)?;
     if current == new_password {
         return Err(invalid("password", "The new password must be different from the current one."));
@@ -282,7 +311,7 @@ pub fn change_own_password(db: &mut Database, actor: &Session, current: &str, ne
 pub fn set_own_pin(db: &mut Database, actor: &Session, current_password: &str, pin: Option<&str>, now: i64) -> Result<Session, ServiceError> {
     actor.require(Permission::ManageOwnSecurity)?;
     let user = active_user(db, actor.user_id)?;
-    check_current_password(&user, current_password)?;
+    check_current_password(db, &user, current_password, now)?;
     let pin = pin.filter(|p| !p.is_empty());
     if let Some(pin) = pin {
         policy::validate_pin(pin)?;

@@ -9,6 +9,7 @@ use serde::Serialize;
 use serde_json::json;
 
 use crate::audit::{self, Actor};
+use crate::auth::verify_actor;
 use crate::{ServiceError, Session};
 
 /// Automatic backups kept (older ones are removed; manual and pre-restore backups never are).
@@ -25,6 +26,8 @@ pub fn backups(actor: &Session, dir: &Path) -> Result<Vec<BackupFile>, ServiceEr
 
 pub fn backup_now(db: &mut Database, actor: &Session, dir: &Path, app_version: &str, now: i64) -> Result<BackupFile, ServiceError> {
     actor.require(Permission::ManageBackups)?;
+    db.read(|c| verify_actor(c, actor))?;
+    ensure_database_loaded(db)?;
     let file = db.create_backup(dir, BackupKind::Manual, app_version)?;
     db.write(|c| audit::record(c, now, Actor::from(actor), "BACKUP_CREATE", None, Some(json!({ "file": file.file_name }))))?;
     Ok(file)
@@ -34,6 +37,8 @@ pub fn backup_now(db: &mut Database, actor: &Session, dir: &Path, app_version: &
 /// data may have different accounts.
 pub fn restore(db: &mut Database, actor: &Session, backup: &Path, dir: &Path, app_version: &str, now: i64) -> Result<RestoreOutcome, ServiceError> {
     actor.require(Permission::ManageBackups)?;
+    // A deactivated or demoted administrator with an old session must not replace all data.
+    db.read(|c| verify_actor(c, actor))?;
     let outcome = db.restore_backup(backup, dir, app_version)?;
     // Recorded in the RESTORED database; the account may not exist there, so by name only.
     db.write(|c| {
@@ -49,13 +54,24 @@ pub fn restore(db: &mut Database, actor: &Session, backup: &Path, dir: &Path, ap
     Ok(outcome)
 }
 
+/// Refuses to back up an empty database (e.g. after a restore failed half-way), so a useless
+/// backup can never push a good automatic backup out of the kept set.
+fn ensure_database_loaded(db: &Database) -> Result<(), ServiceError> {
+    if db.status()?.schema_version == 0 {
+        return Err(ServiceError::Corrupt("the database is not loaded; restart the app".into()));
+    }
+    Ok(())
+}
+
 /// Makes an automatic backup if the last one is older than `min_age_secs` (called at start-up and
 /// periodically with `AUTO_BACKUP_INTERVAL_SECS`, and at exit with `EXIT_BACKUP_INTERVAL_SECS`).
 pub fn auto_backup_if_due(db: &mut Database, dir: &Path, app_version: &str, now: i64, min_age_secs: i64) -> Result<Option<BackupFile>, ServiceError> {
-    let due = latest_backup_time(dir, BackupKind::Automatic)?.is_none_or(|last| now - last >= min_age_secs);
+    // A backup stamped in the future (clock was wrong) must not stop automatic backups.
+    let due = latest_backup_time(dir, BackupKind::Automatic)?.is_none_or(|last| last > now || now - last >= min_age_secs);
     if !due {
         return Ok(None);
     }
+    ensure_database_loaded(db)?;
     let file = db.create_backup(dir, BackupKind::Automatic, app_version)?;
     let removed = prune_backups(dir, BackupKind::Automatic, AUTO_BACKUPS_KEPT)?;
     db.write(|c| audit::record(c, now, Actor::System, "BACKUP_AUTO", None, Some(json!({ "file": file.file_name, "removedOld": removed }))))?;

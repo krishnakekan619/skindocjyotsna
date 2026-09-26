@@ -4,6 +4,7 @@ import { api, type BillDetail } from '../../api';
 import { useApp } from '../../app/AppContext';
 import { ConfirmDialog, ErrorAlert, Loading, useLoader } from '../../components/common';
 import { t } from '../../i18n/en';
+import { todayIso, toIso } from '../../lib/dates';
 import { rupees } from '../../lib/money';
 import { ReceiptPreview } from '../receipt/ReceiptPreview';
 import { BillStatusChip } from './BillStatusChip';
@@ -47,6 +48,10 @@ export function BillDetailDialog({ billId, onClose, onChanged }: { billId: numbe
   };
 
   const bill = data?.detail.bill;
+  // Bills with returns can't be cancelled or corrected (return the rest instead); receptionists
+  // correct same-day bills only. The backend enforces both; this just hides dead-end buttons.
+  const hasReturns = (bill?.returnedPaise ?? 0) > 0 || (data?.detail.items.some((i) => i.returnedQty > 0) ?? false);
+  const sameDay = bill ? toIso(new Date(bill.finalizedAt * 1000)) === todayIso() : false;
   const returnable = data?.detail.items.some((i) => i.qty - i.returnedQty > 0) ?? false;
   const refunded = data?.detail.payments.filter((p) => p.direction === 'REFUND').reduce((s, p) => s + p.amountPaise, 0) ?? 0;
 
@@ -90,8 +95,8 @@ export function BillDetailDialog({ billId, onClose, onChanged }: { billId: numbe
         {data && bill?.status === 'FINALIZED' && (
           <>
             {returnable && <Button onClick={() => setReturning(true)}>{t.bills.returnItems}</Button>}
-            <Button onClick={() => correct(data.detail)}>{t.bills.correct}</Button>
-            {isAdmin && (
+            {!hasReturns && (isAdmin || sameDay) && <Button onClick={() => correct(data.detail)}>{t.bills.correct}</Button>}
+            {isAdmin && !hasReturns && (
               <Button color="error" onClick={() => setCancelling(true)}>
                 {t.bills.cancel}
               </Button>

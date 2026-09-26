@@ -396,11 +396,14 @@ pub struct SalesTotals {
 }
 
 /// Figures for bills finalized in [from, to). Cancelled bills, and bills replaced by a
-/// correction, are not sales.
+/// correction, are not sales. `returned_paise` is the refunds paid out in [from, to), by return
+/// date, so a closed day's figures never change when an older bill is returned later.
 pub fn sales_totals(conn: &Connection, from: i64, to: i64) -> rusqlite::Result<SalesTotals> {
     conn.query_row(
         "SELECT count(*), COALESCE(SUM(subtotal_paise), 0), COALESCE(SUM(discount_paise), 0), COALESCE(SUM(tax_paise), 0),
-                COALESCE(SUM(total_paise), 0), COALESCE(SUM(returned_paise), 0), count(DISTINCT client_id)
+                COALESCE(SUM(total_paise), 0),
+                (SELECT COALESCE(SUM(refund_paise), 0) FROM sales_return WHERE created_at >= ?1 AND created_at < ?2),
+                count(DISTINCT client_id)
          FROM bill WHERE status = 'FINALIZED' AND finalized_at >= ?1 AND finalized_at < ?2",
         params![from, to],
         |r| {
@@ -446,7 +449,8 @@ pub struct ProductSales {
     pub revenue_paise: i64,
 }
 
-/// Quantity kept by clients (sold minus returned) and revenue after refunds, per product.
+/// For bills finalized in [from, to): quantity kept by clients (sold minus returned, whenever
+/// returned) and revenue after those refunds, per product.
 pub fn product_sales(conn: &Connection, from: i64, to: i64) -> rusqlite::Result<Vec<ProductSales>> {
     let mut stmt = conn.prepare(
         "SELECT i.product_id, i.product_name, SUM(i.qty - i.returned_qty),

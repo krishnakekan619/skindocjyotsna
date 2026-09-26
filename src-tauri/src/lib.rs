@@ -34,7 +34,13 @@ fn init_logging(paths: &AppPaths) -> Result<WorkerGuard, Box<dyn std::error::Err
 /// Daily automatic backup (D22). Never blocks or breaks the app: failures are only logged.
 fn auto_backup(app: &AppHandle, min_age_secs: i64) {
     let state = app.state::<AppState>();
-    let Ok(mut db) = state.db.lock() else { return };
+    let mut db = match state.db.lock() {
+        Ok(db) => db,
+        Err(poisoned) => {
+            tracing::warn!("automatic backup: recovered a lock poisoned by an earlier panic");
+            poisoned.into_inner()
+        }
+    };
     match maintenance::auto_backup_if_due(&mut db, &state.paths.backup_dir, &state.app_version, now(), min_age_secs) {
         Ok(Some(file)) => tracing::info!(file = %file.file_name, "automatic backup created"),
         Ok(None) => {}

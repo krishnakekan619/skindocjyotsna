@@ -47,6 +47,8 @@ export function BackupCard({ onRestored }: { onRestored?: (() => void) | undefin
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<Notice>(null);
   const [restoreTarget, setRestoreTarget] = useState<BackupFile | null>(null);
+  // After a restore everyone is signed out: freeze the card until the app returns to sign-in.
+  const [restored, setRestored] = useState(false);
 
   const refresh = useCallback(() => {
     api
@@ -76,7 +78,8 @@ export function BackupCard({ onRestored }: { onRestored?: (() => void) | undefin
     setRestoreTarget(null);
     return run(async () => {
       const result = await api.restoreBackup(file.fileName);
-      if (onRestored) window.setTimeout(onRestored, 4000);
+      setRestored(true);
+      if (onRestored) window.setTimeout(onRestored, 3000);
       return `Restored ${result.restoredFrom.fileName}. The previous data was saved first as ${result.safetyBackup.fileName}.`;
     });
   };
@@ -86,7 +89,7 @@ export function BackupCard({ onRestored }: { onRestored?: (() => void) | undefin
       <CardHeader
         title="Backup & restore"
         action={
-          <Button variant="contained" onClick={backUpNow} disabled={busy}>
+          <Button variant="contained" onClick={backUpNow} disabled={busy || restored}>
             Back up now
           </Button>
         }
@@ -120,7 +123,7 @@ export function BackupCard({ onRestored }: { onRestored?: (() => void) | undefin
                     </TableCell>
                     <TableCell align="right">{formatSize(file.sizeBytes)}</TableCell>
                     <TableCell align="right">
-                      <Button size="small" onClick={() => setRestoreTarget(file)} disabled={busy || file.problem !== null}>
+                      <Button size="small" onClick={() => setRestoreTarget(file)} disabled={busy || restored || file.problem !== null}>
                         Restore…
                       </Button>
                     </TableCell>

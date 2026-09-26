@@ -1,7 +1,7 @@
 {
   "name": "skindocjyotsna",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "SkinDocJyotsna: local-first clinic inventory, billing and client management (Tauri + React + SQLite)",
   "type": "module",
   "scripts": {

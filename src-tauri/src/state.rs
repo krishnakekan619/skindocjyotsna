@@ -1,4 +1,4 @@
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use clinic_core::auth::Permission;
@@ -25,17 +25,28 @@ pub struct AppState {
     pub app_version: String,
 }
 
+/// The server locks this much later than the UI's own timer, because the UI reports activity
+/// at most once a minute (the UI locks on time; this is the backstop).
+const IDLE_GRACE_SECS: i64 = 60;
+
+/// A panic while a lock was held must not break the app until restart. The database stays
+/// consistent (an unfinished transaction rolls back when dropped), so carry on with a warning.
+fn recover<T>(poisoned: PoisonError<MutexGuard<'_, T>>) -> MutexGuard<'_, T> {
+    tracing::warn!("recovered a lock poisoned by an earlier panic");
+    poisoned.into_inner()
+}
+
 pub fn now() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| i64::try_from(d.as_secs()).unwrap_or(0)).unwrap_or(0)
 }
 
 impl AppState {
     pub fn db(&self) -> Result<MutexGuard<'_, Database>, CommandError> {
-        self.db.lock().map_err(|_| CommandError::internal())
+        Ok(self.db.lock().unwrap_or_else(recover))
     }
 
     pub fn auth(&self) -> Result<MutexGuard<'_, AuthState>, CommandError> {
-        self.auth.lock().map_err(|_| CommandError::internal())
+        Ok(self.auth.lock().unwrap_or_else(recover))
     }
 
     /// The signed-in user, if the screen is unlocked, not idle for too long, and the role has
@@ -46,7 +57,7 @@ impl AppState {
         let Some(session) = auth.session.clone() else {
             return Err(CommandError::user("NOT_SIGNED_IN", "Please sign in."));
         };
-        if !auth.locked && now - auth.last_activity > auth.idle_lock_secs {
+        if !auth.locked && now - auth.last_activity > auth.idle_lock_secs + IDLE_GRACE_SECS {
             auth.locked = true;
         }
         if auth.locked {

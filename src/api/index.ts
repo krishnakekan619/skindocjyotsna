@@ -3,6 +3,8 @@ import type { ClinicApi } from './clinicApi';
 import { isCommandError, type CommandError } from './types';
 import { tauriApi } from './tauriTransport';
 
+export { SESSION_CHANGED_EVENT } from './tauriTransport';
+
 export type { ClinicApi } from './clinicApi';
 export * from './types';
 

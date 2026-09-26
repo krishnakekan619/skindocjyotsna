@@ -1,8 +1,25 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { ClinicApi } from './clinicApi';
+import { isCommandError, type CommandError } from './types';
+
+/** Fired when a command finds the session locked or ended; App re-reads the status. */
+export const SESSION_CHANGED_EVENT = 'skindoc:session-changed';
 
 // Argument names are camelCase here; Tauri maps them to the Rust snake_case parameters.
-const call = <R>(command: string, args?: Record<string, unknown>) => invoke<R>(command, args);
+async function call<R>(command: string, args?: Record<string, unknown>): Promise<R> {
+  try {
+    return await invoke<R>(command, args);
+  } catch (error) {
+    if (isCommandError(error)) {
+      if (error.code === 'LOCKED' || error.code === 'NOT_SIGNED_IN') window.dispatchEvent(new Event(SESSION_CHANGED_EVENT));
+      throw error;
+    }
+    // Tauri rejects with a plain string when it cannot pass the arguments to Rust.
+    console.error(`${command} failed`, error);
+    const ipcError: CommandError = { code: 'IPC', message: 'The app could not process this request. Please try again, and restart the app if it keeps happening.' };
+    throw ipcError;
+  }
+}
 
 /** ClinicApi implementation that calls the Rust shell over Tauri IPC. */
 export const tauriApi: ClinicApi = {

@@ -400,3 +400,65 @@ fn dashboard_and_reports() -> TestResult {
     assert_eq!(stock.batches.len(), 2);
     Ok(())
 }
+
+#[test]
+fn a_full_return_refunds_exactly_what_was_collected_after_round_off() -> TestResult {
+    let mut clinic = clinic()?;
+    // ₹20.00 − ₹0.51 = ₹19.49, rounded to ₹19.00: the line total is 49 paise more than was paid.
+    let done = billing::finalize(&mut clinic.db, &clinic.reception, bill("bill-key-0020", vec![line(clinic.paracetamol, 1)], Discount::Amount(Paise::new(51)), cash(1_900)), NOW)?;
+    assert_eq!(done.bill.total_paise, 1_900);
+    let returned = billing::return_items(
+        &mut clinic.db,
+        &clinic.reception,
+        ReturnInput { bill_id: done.bill.id, lines: vec![ReturnLineInput { bill_item_id: done.items[0].id, qty: 1, restock: true }], reason: "Not needed".into(), refund_method: "CASH".into() },
+        NOW + 60,
+    )?;
+    assert_eq!(returned.refund_paise, 1_900, "never more than the bill total");
+    assert_eq!(returned.bill.bill.returned_paise, returned.bill.bill.total_paise);
+    Ok(())
+}
+
+#[test]
+fn a_bill_key_cannot_be_reused_for_a_different_bill() -> TestResult {
+    let mut clinic = clinic()?;
+    let input = bill("bill-key-0021", vec![line(clinic.paracetamol, 1)], Discount::None, cash(2_000));
+    billing::finalize(&mut clinic.db, &clinic.reception, input.clone(), NOW)?;
+    let by_someone_else = billing::finalize(&mut clinic.db, &clinic.owner, input, NOW + 1);
+    assert!(matches!(by_someone_else, Err(ServiceError::NotAllowed(_))));
+    assert_eq!(sellable(&clinic, clinic.paracetamol)?, 99, "stock taken once");
+    Ok(())
+}
+
+#[test]
+fn returns_reject_duplicate_lines_and_cash_received_needs_cash() -> TestResult {
+    let mut clinic = clinic()?;
+    let done = billing::finalize(&mut clinic.db, &clinic.reception, bill("bill-key-0022", vec![line(clinic.paracetamol, 4)], Discount::None, cash(8_000)), NOW)?;
+    let item = done.items[0].id;
+    let duplicate = billing::return_items(
+        &mut clinic.db,
+        &clinic.reception,
+        ReturnInput {
+            bill_id: done.bill.id,
+            lines: vec![ReturnLineInput { bill_item_id: item, qty: 1, restock: true }, ReturnLineInput { bill_item_id: item, qty: 1, restock: true }],
+            reason: "Twice".into(),
+            refund_method: "CASH".into(),
+        },
+        NOW + 60,
+    );
+    assert!(matches!(duplicate, Err(ServiceError::Validation { field: "lines", .. })));
+
+    let mut upi = bill("bill-key-0023", vec![line(clinic.paracetamol, 1)], Discount::None, vec![PaymentInput { method: "UPI".into(), amount_paise: 2_000, reference: String::new() }]);
+    upi.amount_received_paise = Some(5_000);
+    assert!(matches!(billing::finalize(&mut clinic.db, &clinic.reception, upi, NOW), Err(ServiceError::Validation { field: "amountReceived", .. })));
+    Ok(())
+}
+
+#[test]
+fn discounts_arrive_from_the_ui_in_the_documented_json_shape() {
+    // The New Bill screen sends exactly these; "NONE" has no "value" key.
+    let parsed: Vec<Discount> = ["{\"kind\":\"NONE\"}", "{\"kind\":\"PERCENT\",\"value\":1000}", "{\"kind\":\"AMOUNT\",\"value\":1500}"]
+        .iter()
+        .filter_map(|json| serde_json::from_str(json).ok())
+        .collect();
+    assert_eq!(parsed, vec![Discount::None, Discount::Percent(BasisPoints::new(1_000)), Discount::Amount(Paise::new(1_500))]);
+}

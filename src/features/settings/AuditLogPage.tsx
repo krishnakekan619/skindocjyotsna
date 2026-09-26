@@ -20,15 +20,20 @@ export function AuditLogPage() {
   const [rows, setRows] = useState<AuditEntry[] | null>(null);
   const [more, setMore] = useState(true);
   const [error, setError] = useState<unknown>(null);
+  const [loading, setLoading] = useState(false);
 
-  const load = (beforeId: number | null) =>
-    api
+  const load = (beforeId: number | null) => {
+    if (loading) return;
+    setLoading(true);
+    return api
       .listAudit(PAGE, beforeId)
       .then((page) => {
         setRows((current) => (beforeId === null ? page : [...(current ?? []), ...page]));
         setMore(page.length === PAGE);
       })
-      .catch(setError);
+      .catch(setError)
+      .finally(() => setLoading(false));
+  };
   useEffect(() => {
     void load(null);
   }, []);
@@ -67,7 +72,7 @@ export function AuditLogPage() {
       </Card>
       {rows && more && rows.length > 0 && (
         <Stack direction="row" sx={{ mt: 2, justifyContent: 'center' }}>
-          <Button onClick={() => void load(rows[rows.length - 1]?.id ?? null)}>{t.settings.more}</Button>
+          <Button disabled={loading} onClick={() => void load(rows[rows.length - 1]?.id ?? null)}>{t.settings.more}</Button>
         </Stack>
       )}
     </>

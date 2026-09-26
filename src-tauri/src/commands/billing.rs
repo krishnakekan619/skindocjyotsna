@@ -10,13 +10,13 @@ use tauri::State;
 use crate::error::CommandError;
 use crate::state::{AppState, now};
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn quote_bill(state: State<'_, AppState>, lines: Vec<BillLineInput>, discount: Discount, correcting_bill_id: Option<i64>) -> Result<Quote, CommandError> {
     let session = state.session(Permission::CreateBills)?;
     Ok(billing::quote(&*state.db()?, &session, &lines, discount, correcting_bill_id, now())?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn finalize_bill(state: State<'_, AppState>, input: BillInput) -> Result<BillDetail, CommandError> {
     let session = state.session(Permission::CreateBills)?;
     let detail = billing::finalize(&mut *state.db()?, &session, input, now())?;
@@ -24,44 +24,44 @@ pub fn finalize_bill(state: State<'_, AppState>, input: BillInput) -> Result<Bil
     Ok(detail)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_bills(state: State<'_, AppState>, filter: BillFilter) -> Result<Vec<BillRow>, CommandError> {
     let session = state.session(Permission::CreateBills)?;
     Ok(billing::list(&*state.db()?, &session, filter)?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_bill(state: State<'_, AppState>, bill_id: i64) -> Result<BillDetail, CommandError> {
     let session = state.session(Permission::CreateBills)?;
     Ok(billing::get(&*state.db()?, &session, bill_id)?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn cancel_bill(state: State<'_, AppState>, bill_id: i64, reason: String) -> Result<BillDetail, CommandError> {
     let session = state.session(Permission::CancelBills)?;
     Ok(billing::cancel(&mut *state.db()?, &session, bill_id, &reason, now())?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn return_bill_items(state: State<'_, AppState>, input: ReturnInput) -> Result<ReturnResult, CommandError> {
     let session = state.session(Permission::ProcessReturns)?;
     Ok(billing::return_items(&mut *state.db()?, &session, input, now())?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn correct_bill(state: State<'_, AppState>, input: CorrectionInput) -> Result<BillDetail, CommandError> {
     let session = state.session(Permission::CreateBills)?;
     Ok(billing::correct(&mut *state.db()?, &session, input, now())?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_receipt(state: State<'_, AppState>, bill_id: i64) -> Result<ReceiptData, CommandError> {
     let session = state.session(Permission::CreateBills)?;
     Ok(billing::receipt(&*state.db()?, &session, bill_id)?)
 }
 
 /// Saves the receipt as an A5 PDF in the app's exports folder and returns the file name.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn export_receipt_pdf(state: State<'_, AppState>, bill_id: i64) -> Result<String, CommandError> {
     let session = state.session(Permission::CreateBills)?;
     let data = billing::receipt(&*state.db()?, &session, bill_id)?;
@@ -80,7 +80,7 @@ pub fn export_receipt_pdf(state: State<'_, AppState>, bill_id: i64) -> Result<St
 
 /// Opens a file from the exports folder (e.g. a receipt PDF) with the default app. Only plain
 /// file names inside that folder are accepted.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn open_export(state: State<'_, AppState>, file_name: String) -> Result<(), CommandError> {
     state.session(Permission::CreateBills)?;
     let plain = !file_name.is_empty() && !file_name.contains(['/', '\\', ':']) && !file_name.starts_with('.') && file_name.ends_with(".pdf");
