@@ -243,6 +243,10 @@ pub fn unlock_with_pin(db: &mut Database, user_id: i64, pin: &str, now: i64) -> 
     Err(if failures >= PIN_MAX_FAILURES { ServiceError::PinLocked } else { ServiceError::WrongPin { remaining: PIN_MAX_FAILURES - failures } })
 }
 
+pub fn logout(db: &mut Database, actor: &Session, now: i64) -> Result<(), ServiceError> {
+    db.write(|c| audit::record(c, now, Actor::from(actor), "LOGOUT", None, None))
+}
+
 /// Unlocks with the full password (always possible; also re-enables PIN unlock).
 pub fn unlock_with_password(db: &mut Database, user_id: i64, password: &str, now: i64) -> Result<Session, ServiceError> {
     let user = active_user(db, user_id)?;

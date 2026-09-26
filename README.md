@@ -3,15 +3,17 @@
 A local-first clinic inventory, billing and client management app for Windows and macOS.
 Built with **Tauri 2 + React + TypeScript + SQLite**, with a Rust core. It works fully offline.
 
-> **Status: Phase 0 (technical spike).** See `docs/DESIGN-v2-desktop.md` for the design and `docs/DECISIONS.md` for the decisions made so far.
+> **Status: v1 feature-complete, in testing.** Sign-in with roles and PIN lock, inventory with batches/FEFO and an immutable stock ledger, clients, billing with A5 PDF receipts, returns/cancel/correct, reports, audit log and automatic backups. See `docs/DESIGN-v2-desktop.md` for the design and `docs/DECISIONS.md` for the decisions made so far.
 
 ## Project layout
 
 ```
 src/                  React UI (MUI). Screens talk only to the ClinicApi interface (src/api).
 src-tauri/            Desktop shell (Rust): IPC commands, app paths, permissions, bundling config
-crates/clinic-core/   Business rules (money, pricing…): no UI, no database
-crates/clinic-sqlite/ SQLite: connection settings, migrations, health checks
+crates/clinic-core/   Business rules (money, pricing, FEFO, roles, dates): no UI, no database
+crates/clinic-services/ Application flows (billing, stock, clients, reports, backups) in one transaction each
+crates/clinic-sqlite/ SQLite: connection settings, migrations, repositories, backups, health checks
+crates/clinic-pdf/    A5 receipt PDF
 scripts/              Cross-platform helper scripts (offline dependencies)
 setup/                One-run offline environment setup for Windows and macOS
 docs/                 Design, decisions

@@ -11,6 +11,8 @@ use crate::{ServiceError, Session};
 pub(crate) enum Actor<'a> {
     User { id: i64, username: &'a str },
     Anonymous { username_tried: &'a str },
+    /// The app itself (e.g. automatic backups).
+    System,
 }
 
 impl<'a> From<&'a Session> for Actor<'a> {
@@ -33,6 +35,7 @@ pub(crate) fn record(
         Actor::User { id, username } => (Some(id), username),
         // Keep failed-login names short: they are typed by anyone at the login screen.
         Actor::Anonymous { username_tried } => (None, truncate(username_tried, 32)),
+        Actor::System => (None, "system"),
     };
     let details_json = details.map(|d| d.to_string());
     audit::append(

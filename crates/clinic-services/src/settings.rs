@@ -1,5 +1,6 @@
 use clinic_core::auth::Permission;
 use clinic_core::auth::policy::{IDLE_LOCK_DEFAULT_MINUTES, validate_idle_lock_minutes};
+use clinic_core::time::DEFAULT_UTC_OFFSET_MINUTES;
 use clinic_sqlite::Database;
 use clinic_sqlite::repo::settings;
 use clinic_sqlite::rusqlite::Connection;
@@ -24,6 +25,16 @@ pub struct ClinicSettings {
     pub gstin: String,
     pub receipt_footer: String,
     pub idle_lock_minutes: u32,
+    /// Bill numbers look like <prefix>/<FY>/000123.
+    pub invoice_prefix: String,
+    /// Receptionists may give up to this discount (% of the bill) without admin approval (D7).
+    pub receptionist_discount_cap_percent: u32,
+    /// Round bill totals to the nearest rupee, with a visible round-off line (D4).
+    pub round_to_rupee: bool,
+    /// Clinic time zone as minutes from UTC (India: +330).
+    pub utc_offset_minutes: i32,
+    /// Receptionists may process returns up to this many days after the bill (D18).
+    pub return_window_days: u32,
 }
 
 impl Default for ClinicSettings {
@@ -36,6 +47,11 @@ impl Default for ClinicSettings {
             gstin: String::new(),
             receipt_footer: "Thank you. Get well soon!".to_string(),
             idle_lock_minutes: IDLE_LOCK_DEFAULT_MINUTES,
+            invoice_prefix: "INV".to_string(),
+            receptionist_discount_cap_percent: 10,
+            round_to_rupee: true,
+            utc_offset_minutes: DEFAULT_UTC_OFFSET_MINUTES,
+            return_window_days: 7,
         }
     }
 }
@@ -51,6 +67,11 @@ impl ClinicSettings {
             gstin: self.gstin.trim().to_uppercase(),
             receipt_footer: self.receipt_footer.trim().to_string(),
             idle_lock_minutes: self.idle_lock_minutes,
+            invoice_prefix: self.invoice_prefix.trim().to_uppercase(),
+            receptionist_discount_cap_percent: self.receptionist_discount_cap_percent,
+            round_to_rupee: self.round_to_rupee,
+            utc_offset_minutes: self.utc_offset_minutes,
+            return_window_days: self.return_window_days,
         };
         settings.validate()?;
         Ok(settings)
@@ -82,6 +103,19 @@ impl ClinicSettings {
             return Err(invalid("receiptFooter", "Receipt footer must be at most 200 characters."));
         }
         validate_idle_lock_minutes(self.idle_lock_minutes)?;
+        let prefix_ok = (1..=8).contains(&self.invoice_prefix.len()) && self.invoice_prefix.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit());
+        if !prefix_ok {
+            return Err(invalid("invoicePrefix", "Invoice prefix must be 1 to 8 letters or digits, like INV."));
+        }
+        if self.receptionist_discount_cap_percent > 100 {
+            return Err(invalid("receptionistDiscountCapPercent", "Discount limit must be between 0 and 100%."));
+        }
+        if !(-720..=840).contains(&self.utc_offset_minutes) {
+            return Err(invalid("utcOffsetMinutes", "Time zone offset must be between -12:00 and +14:00."));
+        }
+        if !(0..=365).contains(&self.return_window_days) {
+            return Err(invalid("returnWindowDays", "Return window must be 0 to 365 days."));
+        }
         Ok(())
     }
 }
@@ -91,6 +125,13 @@ pub(crate) fn load(conn: &Connection) -> Result<ClinicSettings, ServiceError> {
         Some(json) => serde_json::from_str(&json).map_err(|e| ServiceError::Corrupt(format!("clinic settings: {e}"))),
         None => Ok(ClinicSettings::default()),
     }
+}
+
+/// Clinic settings plus today's date in the clinic's time zone.
+pub(crate) fn clinic_today(conn: &Connection, now: i64) -> Result<(ClinicSettings, clinic_core::time::Date), ServiceError> {
+    let clinic = load(conn)?;
+    let today = clinic_core::time::local_date(now, clinic.utc_offset_minutes);
+    Ok((clinic, today))
 }
 
 /// Expects already-normalized settings.

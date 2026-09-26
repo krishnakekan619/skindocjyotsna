@@ -16,7 +16,10 @@ use rusqlite_migration::{M, Migrations};
 /// Re-exported so higher layers use exactly this crate's rusqlite version.
 pub use rusqlite;
 
-pub use backup::{BACKUP_EXTENSION, BackupFile, BackupKind, BackupMeta, RestoreOutcome, list_backups, validate_backup};
+pub use backup::{
+    BACKUP_EXTENSION, BackupFile, BackupKind, BackupMeta, RestoreOutcome, latest_backup_time, list_backups, prune_backups,
+    validate_backup,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum DbError {
@@ -41,6 +44,7 @@ pub enum DbError {
 const MIGRATIONS: &[M<'static>] = &[
     M::up(include_str!("../migrations/0001_init.sql")),
     M::up(include_str!("../migrations/0002_users_audit.sql")),
+    M::up(include_str!("../migrations/0003_clinic.sql")),
 ];
 
 fn migrations() -> Migrations<'static> {

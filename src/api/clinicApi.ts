@@ -1,18 +1,72 @@
-import type { BackupFile, ReceiptData, RestoreResult, SystemInfo } from './types';
+import type * as T from './types';
 
 /**
- * Everything the UI can ask the application to do.
+ * Everything the UI can ask the application to do (one method per Rust command).
  *
- * The UI depends only on this interface, never on Tauri directly, so a future
- * multi-computer version can swap in an HTTP implementation without touching screens.
+ * Screens depend only on this interface, never on Tauri directly, so a future multi-computer
+ * version can swap in an HTTP implementation without touching them.
  */
 export interface ClinicApi {
-  getSystemInfo(): Promise<SystemInfo>;
-  listBackups(): Promise<BackupFile[]>;
-  createBackup(): Promise<BackupFile>;
-  /** `fileName` must be one returned by `listBackups`. */
-  restoreBackup(fileName: string): Promise<RestoreResult>;
-  getSampleReceipt(): Promise<ReceiptData>;
-  /** Returns the path of the saved PDF. */
-  exportSampleReceiptPdf(): Promise<string>;
+  // Session
+  getAppStatus(): Promise<T.AppStatus>;
+  completeSetup(input: T.SetupInput): Promise<T.AppStatus>;
+  login(username: string, password: string): Promise<T.AppStatus>;
+  logout(): Promise<T.AppStatus>;
+  lockScreen(): Promise<T.AppStatus>;
+  unlockWithPin(pin: string): Promise<T.AppStatus>;
+  unlockWithPassword(password: string): Promise<T.AppStatus>;
+  heartbeat(): Promise<void>;
+  changeOwnPassword(currentPassword: string, newPassword: string): Promise<void>;
+  setOwnPin(currentPassword: string, pin: string | null): Promise<T.AppStatus>;
+  // Users, settings, audit
+  listUsers(): Promise<T.UserSummary[]>;
+  createUser(account: T.NewAccount, role: T.Role): Promise<T.UserSummary>;
+  updateUser(userId: number, change: T.UserUpdate): Promise<T.UserSummary>;
+  resetUserPassword(userId: number, newPassword: string): Promise<void>;
+  getClinicSettings(): Promise<T.ClinicSettings>;
+  updateClinicSettings(settings: T.ClinicSettings): Promise<T.ClinicSettings>;
+  listAudit(limit: number, beforeId: number | null): Promise<T.AuditEntry[]>;
+  // Inventory
+  listCategories(): Promise<T.Category[]>;
+  saveCategory(input: { id: number | null; name: string; isActive: boolean }): Promise<T.Category[]>;
+  listSuppliers(): Promise<T.Supplier[]>;
+  saveSupplier(input: { id: number | null; name: string; phone: string; gstin: string; isActive: boolean }): Promise<T.Supplier[]>;
+  listProducts(filter: T.ProductFilter): Promise<T.ProductRow[]>;
+  getProduct(productId: number): Promise<T.ProductDetail>;
+  saveProduct(input: T.ProductInput): Promise<T.ProductRow>;
+  stockIn(input: T.StockInInput): Promise<T.BatchRow>;
+  adjustStock(input: T.AdjustInput): Promise<T.BatchRow>;
+  listStockLedger(productId: number | null, limit: number): Promise<T.LedgerRow[]>;
+  listExpiring(withinDays: number): Promise<T.ExpiringBatch[]>;
+  searchProductsForSale(text: string): Promise<T.SaleProduct[]>;
+  // Clients
+  searchClients(text: string, includeInactive: boolean): Promise<T.ClientRow[]>;
+  saveClient(input: T.ClientInput): Promise<T.ClientRow>;
+  getClientProfile(clientId: number, fromDate: string | null, toDate: string | null): Promise<T.ClientProfile>;
+  // Billing
+  /** `correctingBillId`: the bill being corrected (its stock counts as available again). */
+  quoteBill(lines: T.BillLineInput[], discount: T.Discount, correctingBillId: number | null): Promise<T.Quote>;
+  finalizeBill(input: T.BillInput): Promise<T.BillDetail>;
+  listBills(filter: T.BillFilter): Promise<T.BillRow[]>;
+  getBill(billId: number): Promise<T.BillDetail>;
+  cancelBill(billId: number, reason: string): Promise<T.BillDetail>;
+  returnBillItems(input: T.ReturnInput): Promise<T.ReturnResult>;
+  correctBill(input: T.CorrectionInput): Promise<T.BillDetail>;
+  getReceipt(billId: number): Promise<T.ReceiptData>;
+  /** Returns the saved file name (in the exports folder). */
+  exportReceiptPdf(billId: number): Promise<string>;
+  openExport(fileName: string): Promise<void>;
+  // Reports
+  getDashboard(): Promise<T.Dashboard>;
+  salesReport(range: T.DateRange): Promise<T.SalesReport>;
+  productSalesReport(range: T.DateRange): Promise<T.ProductSales[]>;
+  stockReport(): Promise<T.StockReport>;
+  // System
+  getSystemInfo(): Promise<T.SystemInfo>;
+  getHealth(): Promise<T.HealthReport>;
+  listBackups(): Promise<T.BackupFile[]>;
+  createBackup(): Promise<T.BackupFile>;
+  /** `fileName` must be one returned by `listBackups`. Signs everyone out. */
+  restoreBackup(fileName: string): Promise<T.RestoreResult>;
+  openFolder(folder: T.AppFolder): Promise<void>;
 }

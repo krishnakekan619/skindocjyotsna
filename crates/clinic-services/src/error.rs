@@ -30,6 +30,13 @@ pub enum ServiceError {
     LastAdmin,
     #[error("permission denied")]
     PermissionDenied,
+    /// A business rule refused the action; the message is written for staff.
+    #[error("{0}")]
+    NotAllowed(String),
+    #[error("insufficient stock for {product}: {available} available")]
+    InsufficientStock { product: String, available: i64 },
+    #[error("discount above {cap_percent}% needs administrator approval")]
+    DiscountApprovalRequired { cap_percent: u32 },
     #[error("stored data is invalid: {0}")]
     Corrupt(String),
     #[error(transparent)]

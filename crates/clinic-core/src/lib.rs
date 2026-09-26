@@ -4,4 +4,7 @@
 //! in isolation and reused unchanged by a future clinic-server binary.
 
 pub mod auth;
+pub mod fefo;
 pub mod money;
+pub mod pricing;
+pub mod time;

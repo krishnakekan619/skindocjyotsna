@@ -15,13 +15,19 @@ crate-type = ["rlib"]
 tauri-build.workspace = true
 
 [dependencies]
+clinic-core.workspace = true
 clinic-pdf.workspace = true
+clinic-services.workspace = true
 clinic-sqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tauri.workspace = true
+tauri-plugin-opener.workspace = true
 tauri-plugin-single-instance.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
+tracing-appender.workspace = true
+tracing-subscriber.workspace = true
 
 [lints]
 workspace = true

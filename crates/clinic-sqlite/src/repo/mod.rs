@@ -3,5 +3,8 @@
 //! both inside and outside a transaction (`Database::write` / `Database::read`).
 
 pub mod audit;
+pub mod billing;
+pub mod clients;
+pub mod inventory;
 pub mod settings;
 pub mod users;

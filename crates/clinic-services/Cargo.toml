@@ -9,6 +9,7 @@ publish.workspace = true
 
 [dependencies]
 clinic-core.workspace = true
+clinic-pdf.workspace = true
 clinic-sqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -224,6 +224,51 @@ pub fn list_backups(dir: &Path) -> Result<Vec<BackupFile>, DbError> {
     Ok(files)
 }
 
+/// When a backup of `kind` was made, read from its file name
+/// (`SkinDocJyotsna-<UTC stamp>-<kind>[-n].clinicbak`); `None` for other kinds or other files.
+fn created_from_name(file_name: &str, kind: BackupKind) -> Option<i64> {
+    let rest = file_name.strip_prefix("SkinDocJyotsna-")?;
+    let secs = crate::timestamp::parse_compact(rest.get(..15)?)?;
+    let after_kind = rest.get(15..)?.strip_prefix('-')?.strip_prefix(kind.as_str())?;
+    (after_kind.starts_with('.') || after_kind.starts_with('-')).then_some(secs)
+}
+
+/// Unix seconds of the newest backup of `kind` in `dir`, if any.
+pub fn latest_backup_time(dir: &Path, kind: BackupKind) -> Result<Option<i64>, DbError> {
+    Ok(backup_times(dir, kind)?.into_iter().map(|(secs, _)| secs).max())
+}
+
+fn backup_times(dir: &Path, kind: BackupKind) -> Result<Vec<(i64, PathBuf)>, DbError> {
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut found = Vec::new();
+    for entry in fs::read_dir(dir)? {
+        let path = entry?.path();
+        let name = file_name_of(&path);
+        if !name.ends_with(&format!(".{BACKUP_EXTENSION}")) {
+            continue;
+        }
+        if let Some(secs) = created_from_name(&name, kind) {
+            found.push((secs, path));
+        }
+    }
+    Ok(found)
+}
+
+/// Keeps the newest `keep` backups of `kind` and deletes older ones. Only ever called for
+/// automatic backups: manual and pre-restore backups are never deleted automatically.
+pub fn prune_backups(dir: &Path, kind: BackupKind, keep: usize) -> Result<usize, DbError> {
+    let mut backups = backup_times(dir, kind)?;
+    backups.sort_by(|a, b| b.0.cmp(&a.0));
+    let mut removed = 0;
+    for (_, path) in backups.into_iter().skip(keep) {
+        fs::remove_file(&path)?;
+        removed += 1;
+    }
+    Ok(removed)
+}
+
 fn read_backup_file(path: &Path) -> BackupFile {
     let file_name = file_name_of(path);
     let size_bytes = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
@@ -379,6 +424,24 @@ mod tests {
         assert_eq!(clinic_name(&db)?, "\"Live\"");
         let listed = list_backups(&backups)?;
         assert_eq!(listed.iter().filter(|b| b.problem.is_some()).count(), 2, "bad files are listed with a problem");
+        Ok(())
+    }
+
+    #[test]
+    fn automatic_backups_are_dated_and_pruned() -> Result<(), DbError> {
+        let dir = TempDir::new("prune");
+        let backups = dir.0.join("backups");
+        let db = Database::open(&dir.0.join("clinic.db"))?;
+        assert_eq!(latest_backup_time(&backups, BackupKind::Automatic)?, None);
+        for _ in 0..3 {
+            db.create_backup(&backups, BackupKind::Automatic, "0.1.0")?;
+        }
+        db.create_backup(&backups, BackupKind::Manual, "0.1.0")?;
+        assert!(latest_backup_time(&backups, BackupKind::Automatic)?.is_some());
+        assert_eq!(prune_backups(&backups, BackupKind::Automatic, 1)?, 2);
+        let left = list_backups(&backups)?;
+        assert_eq!(left.len(), 2, "one automatic + the manual one: {left:?}");
+        assert!(left.iter().any(|b| b.meta.as_ref().map(|m| m.kind) == Some(BackupKind::Manual)));
         Ok(())
     }
 

@@ -38,8 +38,11 @@ function formatWhen(createdUtc: string | null): string {
 
 type Notice = { severity: 'success' | 'error'; text: string } | null;
 
-/** Phase 0 spike: manual backup, list and restore (admin-only from Phase 1). */
-export function BackupCard() {
+/**
+ * Manual backup, list and restore (admin). A restore signs everyone out; `onRestored` runs a few
+ * seconds later (after the result was shown) so the app can return to the sign-in screen.
+ */
+export function BackupCard({ onRestored }: { onRestored?: (() => void) | undefined }) {
   const [backups, setBackups] = useState<BackupFile[]>([]);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<Notice>(null);
@@ -73,6 +76,7 @@ export function BackupCard() {
     setRestoreTarget(null);
     return run(async () => {
       const result = await api.restoreBackup(file.fileName);
+      if (onRestored) window.setTimeout(onRestored, 4000);
       return `Restored ${result.restoredFrom.fileName}. The previous data was saved first as ${result.safetyBackup.fileName}.`;
     });
   };
