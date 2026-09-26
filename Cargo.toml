@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["src-tauri", "crates/clinic-core", "crates/clinic-sqlite", "crates/clinic-pdf"]
+members = ["src-tauri", "crates/clinic-core", "crates/clinic-sqlite", "crates/clinic-pdf", "crates/clinic-services"]
 
 [workspace.package]
 version = "0.1.0"
@@ -13,6 +13,9 @@ publish = false
 clinic-core = { path = "crates/clinic-core" }
 clinic-sqlite = { path = "crates/clinic-sqlite" }
 clinic-pdf = { path = "crates/clinic-pdf" }
+clinic-services = { path = "crates/clinic-services" }
+# Argon2id password/PIN hashing (default features: random salts via getrandom).
+argon2 = "0.6"
 # default-features off: skips the HTML layout engine; we position text ourselves.
 printpdf = { version = "0.12", default-features = false }
 # "bundled" compiles SQLite into the app: same SQLite version on Windows and macOS, nothing to install.
@@ -31,6 +34,13 @@ unsafe_code = "forbid"
 [workspace.lints.clippy]
 unwrap_used = "warn"
 expect_used = "warn"
+
+# Argon2 is deliberately slow; unoptimised it makes debug builds and tests crawl.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3
 
 [profile.release]
 # Smallest reasonable binary ("lightest possible application").

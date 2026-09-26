@@ -4,13 +4,17 @@
 //! protect against crashes and power loss, and runs any pending schema migrations.
 
 mod backup;
+pub mod repo;
 mod timestamp;
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use rusqlite::Connection;
+use rusqlite::{Connection, TransactionBehavior};
 use rusqlite_migration::{M, Migrations};
+
+/// Re-exported so higher layers use exactly this crate's rusqlite version.
+pub use rusqlite;
 
 pub use backup::{BACKUP_EXTENSION, BackupFile, BackupKind, BackupMeta, RestoreOutcome, list_backups, validate_backup};
 
@@ -34,7 +38,10 @@ pub enum DbError {
     NotAFileDatabase,
 }
 
-const MIGRATIONS: &[M<'static>] = &[M::up(include_str!("../migrations/0001_init.sql"))];
+const MIGRATIONS: &[M<'static>] = &[
+    M::up(include_str!("../migrations/0001_init.sql")),
+    M::up(include_str!("../migrations/0002_users_audit.sql")),
+];
 
 fn migrations() -> Migrations<'static> {
     Migrations::from_slice(MIGRATIONS)
@@ -96,6 +103,21 @@ impl Database {
     /// Full `PRAGMA integrity_check` (slower than the quick check in `status`).
     pub fn verify_integrity(&self) -> Result<(), DbError> {
         verify_integrity(&self.conn)
+    }
+
+    /// Runs read-only work on the connection.
+    pub fn read<T, E>(&self, work: impl FnOnce(&Connection) -> Result<T, E>) -> Result<T, E> {
+        work(&self.conn)
+    }
+
+    /// Runs `work` in ONE transaction: everything it writes is committed together, or, if it
+    /// returns an error (or the app crashes), nothing is. `BEGIN IMMEDIATE` takes the write lock
+    /// up front, so no other write can interleave.
+    pub fn write<T, E: From<rusqlite::Error>>(&mut self, work: impl FnOnce(&Connection) -> Result<T, E>) -> Result<T, E> {
+        let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let value = work(&tx)?;
+        tx.commit()?;
+        Ok(value)
     }
 }
 
