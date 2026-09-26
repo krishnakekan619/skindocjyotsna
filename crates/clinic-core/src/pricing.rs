@@ -158,7 +158,7 @@ mod tests {
         assert_eq!(totals.subtotal, Paise::new(96_000));
         assert_eq!(totals.eligible_subtotal, Paise::new(16_000));
         assert_eq!((totals.lines[0].discount_share, totals.lines[1].discount_share), (Paise::ZERO, Paise::ZERO));
-        assert_eq!(totals.lines[2].discount_share + totals.lines[3].discount_share, Paise::new(1_000));
+        assert_eq!(totals.lines[2].discount_share.value() + totals.lines[3].discount_share.value(), 1_000);
         assert_eq!(totals.total, Paise::new(95_000));
         // 10% is 10% of the medicines only; more than the medicines is refused.
         let percent = price_bill(&[service(50_000), line(2_000, 5, 0)], Discount::Percent(BasisPoints::new(1_000)), false)?;
