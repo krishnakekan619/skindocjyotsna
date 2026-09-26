@@ -1,4 +1,4 @@
-# Phase 0: Technical Spike, Status
+| 0.5 | Installers: Windows `.exe` (NSIS, all users), macOS universal `.dmg` | ✅ Done | Built in CI, published as GitHub Release v0.1.0 with checksums; installed and launched on the MacBook || 0.4 | PDF receipt (A5, ₹ glyph, pagination) + print-ready HTML | ✅ Done | 5 Rust PDF tests + 4 preview tests pass; real-printer test in Phase 5 || 0.3 | Database: auto-create + migrations, WAL/FULL, integrity check, FTS5, backup, restore | ✅ Done | 9 Rust tests pass in CI; database created on first launch on the MacBook || 0.2 | App skeleton (Tauri + React + Rust workspace), offline project dependencies | ✅ Done | Compiles in CI on Windows + macOS; 22 UI tests || 0.1 | Offline setup bundle scripts (Windows + macOS) | ✅ Done | Windows bundle prepared and installed on the dev laptop (Dev/Build roles, tools.lock). macOS bundle not needed yet (CI builds) |# Phase 0: Technical Spike, Status
 
 Goal: prove every risky building block works on Windows and macOS before any features are built.
 
@@ -12,18 +12,9 @@ Goal: prove every risky building block works on Windows and macOS before any fea
 | 0.6 | Rebuild-from-scratch drill: setup → install → restore backup, timed | ➡️ Moved to Phases 8–9 | Needs a clean test PC and the real restore screen (see PHASE-0-REPORT.md) |
 | 0.7 | Go/no-go report | ✅ GO | `docs/PHASE-0-REPORT.md` |
 
-## When Rust is installed on this PC (after `Install-DevPC.cmd`)
+## Manual checks
 
-```bash
-cargo test --workspace      # expect a round of small compile fixes: this code was written blind
-npm run dev                 # opens the app: System status, Backup & restore, Receipt (sample)
-```
-Things to check by hand in the running app:
-1. **System status:** Integrity OK, WAL OK, Fast search OK. The database path is under `%LOCALAPPDATA%\in.skindocjyotsna.clinic\`.
-2. **Back up now:** a new row appears.
-3. **Restore:** type RESTORE. A "Before restore" row appears too.
-4. **Save PDF:** open the file. It should be A5, show ₹, and mark "Sunscreen SPF 50" as *Not supplied*.
-5. **Print:** the system print dialog shows an A5 page (no printer needed: pick "Microsoft Print to PDF").
+The development laptop cannot run unsigned programs (DEC-021). Manual checks happen on the MacBook and on a Windows PC without company security software. See the 5 checks in `docs/GETTING-STARTED.md` (W7 / M7).
 
 ## Resolved
 - **Q-P2: Shared data across OS accounts?** No. The clinic uses one OS login, with two app logins (ADMIN owner, RECEPTIONIST). See DEC-017. The data location stays as designed.
