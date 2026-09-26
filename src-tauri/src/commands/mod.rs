@@ -2,6 +2,7 @@
 // and grants it in capabilities/default.json), or the UI cannot call it.
 pub mod admin;
 pub mod billing;
+pub mod catalog;
 pub mod clients;
 pub mod inventory;
 pub mod reports;

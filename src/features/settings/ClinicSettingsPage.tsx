@@ -59,6 +59,15 @@ export function ClinicSettingsPage() {
               <TextField label={t.setup.gstin} value={draft.gstin} onChange={(e) => set({ gstin: e.target.value.toUpperCase() })} error={field === 'gstin'} />
             </FormGrid>
             <TextField label={t.settings.receiptFooter} value={draft.receiptFooter} onChange={(e) => set({ receiptFooter: e.target.value })} error={field === 'receiptFooter'} />
+            <TextField
+              label={t.settings.whatsappMessage}
+              value={draft.whatsappMessage}
+              onChange={(e) => set({ whatsappMessage: e.target.value })}
+              helperText={t.settings.whatsappHint}
+              error={field === 'whatsappMessage'}
+              multiline
+              minRows={5}
+            />
             <FormGrid>
               <TextField label={t.settings.invoicePrefix} value={draft.invoicePrefix} onChange={(e) => set({ invoicePrefix: e.target.value.toUpperCase() })} error={field === 'invoicePrefix'} />
               <TextField label={t.settings.discountCap} value={draft.receptionistDiscountCapPercent} onChange={(e) => set({ receptionistDiscountCapPercent: whole(e.target.value) })} error={field === 'receptionistDiscountCapPercent'} />

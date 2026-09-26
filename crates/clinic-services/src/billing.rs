@@ -10,13 +10,15 @@ use clinic_core::fefo::{self, Allocation};
 use clinic_core::money::{BasisPoints, Paise};
 use clinic_core::pricing::{self, Discount, LineInput};
 use clinic_core::time::{Date, format_local_datetime, local_date, local_day_start_utc};
-use clinic_pdf::{ReceiptData, ReceiptLine, ReceiptPayment};
+use clinic_pdf::{E_RECEIPT_NOTICE, ReceiptData, ReceiptLine, ReceiptPayment, ReceiptTotal};
 use clinic_sqlite::Database;
 use clinic_sqlite::repo::billing::{
-    self as repo, BillItemRow, BillQuery, BillRow, NewBill, NewBillItem, NewPayment, NewReturn, PaymentRow, next_number,
+    self as repo, BillItemRow, BillQuery, BillRow, NewBill, NewBillItem, NewPayment, NewReturn, NewServiceItem, PaymentRow, ServiceItemRow,
+    next_number,
 };
 use clinic_sqlite::repo::clients;
 use clinic_sqlite::repo::inventory::{self as stock, Movement, ProductRow};
+use clinic_sqlite::repo::services::{self as catalog, ServiceRow};
 use clinic_sqlite::repo::users;
 use clinic_sqlite::rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -24,6 +26,7 @@ use serde_json::json;
 
 use crate::audit::{self, Actor};
 use crate::auth::{role_of, verify_actor};
+use crate::catalog::MAX_PRICE_PAISE;
 use crate::error::invalid;
 use crate::inventory::{EXPIRY_WARNING_DAYS, batch_stock};
 use crate::settings::{ClinicSettings, clinic_today};
@@ -53,6 +56,22 @@ pub struct BillLineInput {
     pub not_supplied_qty: i64,
 }
 
+/// A consultation or procedure on the bill. `unit_price_paise`: the price charged; `None` =
+/// the catalog price. Below the catalog price needs an administrator's approval.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceLineInput {
+    pub service_id: i64,
+    #[serde(default = "one")]
+    pub qty: i64,
+    #[serde(default)]
+    pub unit_price_paise: Option<i64>,
+}
+
+fn one() -> i64 {
+    1
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PaymentInput {
@@ -76,7 +95,12 @@ pub struct BillInput {
     /// Created by the New Bill screen once per bill; repeated submits return the same bill.
     pub idempotency_key: String,
     pub client_id: Option<i64>,
+    /// Medicines and products.
+    #[serde(default)]
     pub lines: Vec<BillLineInput>,
+    /// Consultations and procedures (no stock).
+    #[serde(default)]
+    pub services: Vec<ServiceLineInput>,
     #[serde(default)]
     pub discount: Discount,
     #[serde(default)]
@@ -105,9 +129,6 @@ struct PlannedItem {
 /// `give_back`: (batch id, qty) pairs counted as available again: the stock of a bill that is
 /// being corrected, which the correction returns before re-selling (quote only).
 fn plan_items(c: &Connection, lines: &[BillLineInput], today: Date, give_back: &[(i64, i64)]) -> Result<Vec<PlannedItem>, ServiceError> {
-    if lines.is_empty() {
-        return Err(invalid("lines", "Add at least one product to the bill."));
-    }
     if lines.len() > 200 {
         return Err(invalid("lines", "A bill can have at most 200 lines."));
     }
@@ -171,28 +192,85 @@ fn plan_items(c: &Connection, lines: &[BillLineInput], today: Date, give_back: &
     Ok(items)
 }
 
+/// A consultation or procedure as it will be stored.
+#[derive(Debug, Clone)]
+struct PlannedService {
+    service: ServiceRow,
+    qty: i64,
+    unit_price: i64,
+}
+
+impl PlannedService {
+    fn below_default(&self) -> bool {
+        self.unit_price < self.service.default_price_paise
+    }
+}
+
+fn plan_services(c: &Connection, inputs: &[ServiceLineInput]) -> Result<Vec<PlannedService>, ServiceError> {
+    if inputs.len() > 50 {
+        return Err(invalid("services", "A bill can have at most 50 consultations and procedures."));
+    }
+    let mut planned = Vec::with_capacity(inputs.len());
+    for input in inputs {
+        let service = catalog::find(c, input.service_id)?
+            .filter(|s| s.is_active)
+            .ok_or_else(|| ServiceError::NotAllowed("Unable to complete the operation. The selected consultation or procedure is no longer available.".into()))?;
+        if !(1..=100).contains(&input.qty) {
+            return Err(invalid("services", "Each consultation or procedure needs a quantity from 1 to 100."));
+        }
+        let unit_price = input.unit_price_paise.unwrap_or(service.default_price_paise);
+        if !(0..=MAX_PRICE_PAISE).contains(&unit_price) {
+            return Err(invalid("services", "Price must be between ₹0 and ₹10,00,000."));
+        }
+        planned.push(PlannedService { service, qty: input.qty, unit_price });
+    }
+    Ok(planned)
+}
+
 struct Priced {
     items: Vec<PlannedItem>,
     /// Per item (not-supplied items get zeros).
     lines: Vec<pricing::PricedLine>,
+    services: Vec<PlannedService>,
+    service_lines: Vec<pricing::PricedLine>,
     totals: pricing::BillTotals,
 }
 
-fn price(items: Vec<PlannedItem>, discount: Discount, clinic: &ClinicSettings) -> Result<Priced, ServiceError> {
-    let inputs: Vec<LineInput> = items
-        .iter()
-        .filter(|i| i.qty > 0)
-        .map(|i| LineInput {
-            unit_price: Paise::new(i.unit_price),
-            qty: u32::try_from(i.qty).unwrap_or(u32::MAX),
-            gst_rate: BasisPoints::new(u32::try_from(i.product.gst_rate_bp).unwrap_or(0)),
-        })
-        .collect();
+impl Priced {
+    /// Gross (before discount) of consultations, procedures and products.
+    fn section_totals(&self) -> (i64, i64, i64) {
+        let of_kind = |kind: &str| -> i64 {
+            self.services.iter().zip(&self.service_lines).filter(|(s, _)| s.service.kind == kind).map(|(_, l)| l.gross.value()).sum()
+        };
+        (of_kind("CONSULTATION"), of_kind("PROCEDURE"), self.lines.iter().map(|l| l.gross.value()).sum())
+    }
+}
+
+fn price(items: Vec<PlannedItem>, services: Vec<PlannedService>, discount: Discount, clinic: &ClinicSettings) -> Result<Priced, ServiceError> {
+    if items.is_empty() && services.is_empty() {
+        return Err(invalid("lines", "Add a consultation, procedure or product to the bill."));
+    }
+    // Products first (all discount-eligible for now), then consultations and procedures.
+    let product_inputs = items.iter().filter(|i| i.qty > 0).map(|i| LineInput {
+        unit_price: Paise::new(i.unit_price),
+        qty: u32::try_from(i.qty).unwrap_or(u32::MAX),
+        gst_rate: BasisPoints::new(u32::try_from(i.product.gst_rate_bp).unwrap_or(0)),
+        discount_eligible: true,
+    });
+    let service_inputs = services.iter().map(|s| LineInput {
+        unit_price: Paise::new(s.unit_price),
+        qty: u32::try_from(s.qty).unwrap_or(u32::MAX),
+        gst_rate: BasisPoints::new(u32::try_from(s.service.gst_rate_bp).unwrap_or(0)),
+        discount_eligible: s.service.discount_eligible,
+    });
+    let inputs: Vec<LineInput> = product_inputs.chain(service_inputs).collect();
     let totals = pricing::price_bill(&inputs, discount, clinic.round_to_rupee).map_err(|e| invalid("discount", &format!("{}.", capitalize(&e.to_string()))))?;
-    let mut supplied = totals.lines.iter();
+    let supplied_count = items.iter().filter(|i| i.qty > 0).count();
+    let mut supplied = totals.lines.iter().take(supplied_count);
     let zero = pricing::PricedLine { gross: Paise::ZERO, discount_share: Paise::ZERO, net: Paise::ZERO, tax: Paise::ZERO };
     let lines = items.iter().map(|i| if i.qty > 0 { supplied.next().copied().unwrap_or(zero) } else { zero }).collect();
-    Ok(Priced { items, lines, totals })
+    let service_lines = totals.lines.iter().skip(supplied_count).copied().collect();
+    Ok(Priced { items, lines, services, service_lines, totals })
 }
 
 fn capitalize(text: &str) -> String {
@@ -222,25 +300,49 @@ pub struct QuoteLine {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct QuoteServiceLine {
+    pub service_id: i64,
+    pub kind: String,
+    pub name: String,
+    pub qty: i64,
+    pub unit_price_paise: i64,
+    pub default_price_paise: i64,
+    pub gross_paise: i64,
+    pub discount_share_paise: i64,
+    pub net_paise: i64,
+    pub tax_paise: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Quote {
     pub lines: Vec<QuoteLine>,
+    /// Consultations and procedures, in the order sent.
+    pub service_lines: Vec<QuoteServiceLine>,
+    /// Gross of each section, before the discount.
+    pub consultation_paise: i64,
+    pub procedures_paise: i64,
+    pub products_paise: i64,
+    /// What the discount applies to (the medicines/products, plus any eligible services).
+    pub eligible_subtotal_paise: i64,
     pub subtotal_paise: i64,
     pub discount_paise: i64,
     pub tax_paise: i64,
     pub round_off_paise: i64,
     pub total_paise: i64,
     pub discount_rate_bp: u32,
-    /// The discount is above the receptionist limit: an administrator must approve it.
+    /// An administrator must approve (discount above the receptionist limit, or a price below
+    /// the standard fee).
     pub needs_approval: bool,
 }
 
 /// The discount rate checked against the receptionist cap. A percent discount is compared as
 /// typed (10% is exactly 10%, even if rounding to paise makes the amount a little higher);
-/// a rupee discount is converted to a rate of the subtotal.
+/// a rupee discount is converted to a rate of the amount it applies to.
 fn discount_rate(discount: Discount, totals: &pricing::BillTotals) -> u32 {
     match discount {
         Discount::Percent(bp) => bp.value(),
-        Discount::None | Discount::Amount(_) => pricing::discount_rate_bp(totals.discount, totals.subtotal),
+        Discount::None | Discount::Amount(_) => pricing::discount_rate_bp(totals.discount, totals.eligible_subtotal),
     }
 }
 
@@ -251,7 +353,15 @@ fn needs_approval(actor: &Session, rate_bp: u32, clinic: &ClinicSettings) -> boo
 /// Prices a bill without saving anything (the New Bill screen calls this as lines change, so
 /// all money arithmetic stays in Rust, never in JavaScript).
 /// `correcting`: id of the bill being corrected; its stock counts as available (it goes back first).
-pub fn quote(db: &Database, actor: &Session, lines: &[BillLineInput], discount: Discount, correcting: Option<i64>, now: i64) -> Result<Quote, ServiceError> {
+pub fn quote(
+    db: &Database,
+    actor: &Session,
+    lines: &[BillLineInput],
+    services: &[ServiceLineInput],
+    discount: Discount,
+    correcting: Option<i64>,
+    now: i64,
+) -> Result<Quote, ServiceError> {
     actor.require(Permission::CreateBills)?;
     db.read(|c| {
         let (clinic, today) = clinic_today(c, now)?;
@@ -266,7 +376,7 @@ pub fn quote(db: &Database, actor: &Session, lines: &[BillLineInput], discount: 
             }
             None => Vec::new(),
         };
-        let priced = price(plan_items(c, lines, today, &give_back)?, discount, &clinic)?;
+        let priced = price(plan_items(c, lines, today, &give_back)?, plan_services(c, services)?, discount, &clinic)?;
         let mut quote_lines = Vec::with_capacity(priced.items.len());
         for (item, line) in priced.items.iter().zip(&priced.lines) {
             let mut batch_nos = Vec::new();
@@ -291,17 +401,41 @@ pub fn quote(db: &Database, actor: &Session, lines: &[BillLineInput], discount: 
                 expires_soon: item.expires_soon,
             });
         }
+        let service_lines = priced
+            .services
+            .iter()
+            .zip(&priced.service_lines)
+            .map(|(s, line)| QuoteServiceLine {
+                service_id: s.service.id,
+                kind: s.service.kind.clone(),
+                name: s.service.name.clone(),
+                qty: s.qty,
+                unit_price_paise: s.unit_price,
+                default_price_paise: s.service.default_price_paise,
+                gross_paise: line.gross.value(),
+                discount_share_paise: line.discount_share.value(),
+                net_paise: line.net.value(),
+                tax_paise: line.tax.value(),
+            })
+            .collect();
+        let (consultation_paise, procedures_paise, products_paise) = priced.section_totals();
         let t = &priced.totals;
         let rate = discount_rate(discount, t);
+        let below_default = priced.services.iter().any(PlannedService::below_default);
         Ok(Quote {
             lines: quote_lines,
+            service_lines,
+            consultation_paise,
+            procedures_paise,
+            products_paise,
+            eligible_subtotal_paise: t.eligible_subtotal.value(),
             subtotal_paise: t.subtotal.value(),
             discount_paise: t.discount.value(),
             tax_paise: t.tax.value(),
             round_off_paise: t.round_off.value(),
             total_paise: t.total.value(),
             discount_rate_bp: rate,
-            needs_approval: needs_approval(actor, rate, &clinic),
+            needs_approval: needs_approval(actor, rate, &clinic) || (actor.role != Role::Admin && below_default),
         })
     })
 }
@@ -312,7 +446,10 @@ pub fn quote(db: &Database, actor: &Session, lines: &[BillLineInput], discount: 
 #[serde(rename_all = "camelCase")]
 pub struct BillDetail {
     pub bill: BillRow,
+    /// Medicines and products.
     pub items: Vec<BillItemRow>,
+    /// Consultations and procedures.
+    pub services: Vec<ServiceItemRow>,
     pub payments: Vec<PaymentRow>,
 }
 
@@ -334,6 +471,7 @@ fn load_detail(c: &Connection, bill_id: i64) -> Result<BillDetail, ServiceError>
     Ok(BillDetail {
         bill: repo::find_bill(c, bill_id)?.ok_or(ServiceError::NotFound("bill"))?,
         items: repo::items(c, bill_id)?,
+        services: repo::service_items(c, bill_id)?,
         payments: repo::payments(c, bill_id)?,
     })
 }
@@ -345,8 +483,9 @@ fn validate_key(key: &str) -> Result<(), ServiceError> {
     Ok(())
 }
 
-fn approve_discount(c: &Connection, approval: Option<&Approval>, cap_percent: u32) -> Result<i64, ServiceError> {
-    let Some(approval) = approval else { return Err(ServiceError::DiscountApprovalRequired { cap_percent }) };
+/// Checks an administrator's credentials; `missing` is the error when none were given.
+fn approve(c: &Connection, approval: Option<&Approval>, missing: ServiceError) -> Result<i64, ServiceError> {
+    let Some(approval) = approval else { return Err(missing) };
     let username = clinic_core::auth::policy::normalize_username(&approval.username);
     let wrong = || invalid("approval", "Administrator username or password is not correct.");
     let admin = users::find_by_username(c, &username)?.ok_or_else(wrong)?;
@@ -368,12 +507,15 @@ fn finalize_in_tx(c: &Connection, actor: &Session, input: &BillInput, now: i64, 
     if chars(note) > 200 {
         return Err(invalid("note", "Note must be at most 200 characters."));
     }
-    let priced = price(plan_items(c, &input.lines, today, &[])?, input.discount, &clinic)?;
+    let priced = price(plan_items(c, &input.lines, today, &[])?, plan_services(c, &input.services)?, input.discount, &clinic)?;
     let totals = &priced.totals;
 
     let rate = discount_rate(input.discount, totals);
+    let below_default = actor.role != Role::Admin && priced.services.iter().any(PlannedService::below_default);
     let approved_by = if needs_approval(actor, rate, &clinic) {
-        Some(approve_discount(c, input.approval.as_ref(), clinic.receptionist_discount_cap_percent)?)
+        Some(approve(c, input.approval.as_ref(), ServiceError::DiscountApprovalRequired { cap_percent: clinic.receptionist_discount_cap_percent })?)
+    } else if below_default {
+        Some(approve(c, input.approval.as_ref(), ServiceError::PriceApprovalRequired)?)
     } else {
         None
     };
@@ -449,6 +591,27 @@ fn finalize_in_tx(c: &Connection, actor: &Session, input: &BillInput, now: i64, 
             }
         }
     }
+    // Consultations and procedures: no stock involved.
+    for (index, (planned, line)) in priced.services.iter().zip(&priced.service_lines).enumerate() {
+        repo::insert_service_item(
+            c,
+            &NewServiceItem {
+                bill_id,
+                line_no: index as i64 + 1,
+                service_id: planned.service.id,
+                kind: &planned.service.kind,
+                name: &planned.service.name,
+                qty: planned.qty,
+                unit_price_paise: planned.unit_price,
+                default_price_paise: planned.service.default_price_paise,
+                discount_eligible: planned.service.discount_eligible,
+                discount_share_paise: line.discount_share.value(),
+                gst_rate_bp: planned.service.gst_rate_bp,
+                tax_paise: line.tax.value(),
+                line_total_paise: line.net.value(),
+            },
+        )?;
+    }
     for p in &input.payments {
         repo::insert_payment(c, &NewPayment { bill_id, method: &p.method, amount_paise: p.amount_paise, direction: "IN", reference: p.reference.trim(), sales_return_id: None, now })?;
     }
@@ -461,7 +624,7 @@ fn finalize_in_tx(c: &Connection, actor: &Session, input: &BillInput, now: i64, 
         Actor::from(actor),
         "BILL_FINALIZE",
         Some(("bill", bill_id.to_string())),
-        Some(json!({ "billNo": bill_no, "total": totals.total.value(), "items": priced.items.len(), "discountApprovedBy": approved_by })),
+        Some(json!({ "billNo": bill_no, "total": totals.total.value(), "items": priced.items.len(), "services": priced.services.len(), "approvedBy": approved_by })),
     )?;
     Ok(bill_id)
 }
@@ -716,15 +879,18 @@ pub fn return_items(db: &mut Database, actor: &Session, input: ReturnInput, now:
             let now_returning: i64 = input.lines.iter().filter(|l| l.bill_item_id == item.id).map(|l| l.qty).sum();
             item.returned_qty + now_returning == item.qty
         });
+        // Consultations and procedures are not returned (correct or cancel the bill instead), so
+        // their share of the total is never refunded here.
+        let services_total: i64 = detail.services.iter().map(|s| s.line_total_paise).sum();
         if completes_bill {
-            let left_to_refund = detail.bill.total_paise - detail.bill.returned_paise;
+            let left_to_refund = (detail.bill.total_paise - services_total - detail.bill.returned_paise).max(0);
             let difference = left_to_refund - portions.iter().map(|p| p.refund).sum::<i64>();
             if let Some(largest) = portions.iter_mut().max_by_key(|p| p.refund) {
                 largest.refund = (largest.refund + difference).max(0);
             }
         }
         // Partial returns too: all refunds together never exceed what the client paid.
-        let mut excess = portions.iter().map(|p| p.refund).sum::<i64>() - (detail.bill.total_paise - detail.bill.returned_paise);
+        let mut excess = portions.iter().map(|p| p.refund).sum::<i64>() - (detail.bill.total_paise - services_total - detail.bill.returned_paise).max(0);
         while excess > 0 {
             let Some(largest) = portions.iter_mut().filter(|p| p.refund > 0).max_by_key(|p| p.refund) else { break };
             let cut = excess.min(largest.refund);
@@ -787,7 +953,24 @@ pub fn receipt(db: &Database, actor: &Session, bill_id: i64) -> Result<ReceiptDa
         let detail = load_detail(c, bill_id)?;
         let (clinic, _) = clinic_today(c, 0)?;
         let bill = &detail.bill;
-        let lines = detail
+        // Headings and section subtotals only when the bill has consultations or procedures;
+        // a medicines-only bill prints exactly as before.
+        let sectioned = !detail.services.is_empty();
+        let service_line = |s: &ServiceItemRow, section: &str| ReceiptLine {
+            name: s.name.clone(),
+            detail: None,
+            qty: u32::try_from(s.qty).unwrap_or(0),
+            unit_price: Paise::new(s.unit_price_paise),
+            amount: Paise::new(s.line_total_paise),
+            not_supplied_qty: 0,
+            section: section.to_string(),
+        };
+        let consultations: Vec<&ServiceItemRow> = detail.services.iter().filter(|s| s.kind == "CONSULTATION").collect();
+        let procedures: Vec<&ServiceItemRow> = detail.services.iter().filter(|s| s.kind == "PROCEDURE").collect();
+        let product_section = if sectioned { "Medicines & Products" } else { "" };
+        let mut lines: Vec<ReceiptLine> = consultations.iter().map(|&s| service_line(s, "Consultation")).collect();
+        lines.extend(procedures.iter().map(|&s| service_line(s, "Procedures")));
+        let product_lines: Vec<ReceiptLine> = detail
             .items
             .iter()
             .map(|i| ReceiptLine {
@@ -806,8 +989,25 @@ pub fn receipt(db: &Database, actor: &Session, bill_id: i64) -> Result<ReceiptDa
                 unit_price: Paise::new(i.unit_price_paise),
                 amount: Paise::new(i.line_total_paise),
                 not_supplied_qty: u32::try_from(i.not_supplied_qty).unwrap_or(0),
+                section: product_section.to_string(),
             })
             .collect();
+        lines.extend(product_lines);
+        let gross_of = |rows: &[&ServiceItemRow]| -> i64 { rows.iter().map(|s| s.line_total_paise + s.discount_share_paise).sum() };
+        let products_gross: i64 = detail.items.iter().map(|i| i.line_total_paise + i.discount_share_paise).sum();
+        let mut breakdown = Vec::new();
+        if sectioned {
+            if !consultations.is_empty() {
+                breakdown.push(ReceiptTotal { label: "Consultation".into(), amount: Paise::new(gross_of(consultations.as_slice())) });
+            }
+            if !procedures.is_empty() {
+                breakdown.push(ReceiptTotal { label: "Procedures".into(), amount: Paise::new(gross_of(procedures.as_slice())) });
+            }
+            if !detail.items.is_empty() {
+                breakdown.push(ReceiptTotal { label: "Medicines & products".into(), amount: Paise::new(products_gross) });
+            }
+        }
+        let discount_label = if sectioned && detail.services.iter().all(|s| !s.discount_eligible) { "Discount on medicines" } else { "Discount" };
         let status_banner = match bill.status.as_str() {
             "CANCELLED" => Some("CANCELLED".to_string()),
             "CORRECTED" => Some(format!("CORRECTED - see {}", bill.corrected_by_bill_no.as_deref().unwrap_or("new bill"))),
@@ -829,6 +1029,8 @@ pub fn receipt(db: &Database, actor: &Session, bill_id: i64) -> Result<ReceiptDa
             }),
             lines,
             subtotal: Paise::new(bill.subtotal_paise),
+            breakdown,
+            discount_label: discount_label.to_string(),
             discount: Paise::new(bill.discount_paise),
             tax_label: "GST included".to_string(),
             tax: Paise::new(bill.tax_paise),
@@ -844,6 +1046,7 @@ pub fn receipt(db: &Database, actor: &Session, bill_id: i64) -> Result<ReceiptDa
             change_due: bill.change_paise.map(Paise::new),
             billed_by: Some(bill.created_by_name.clone()),
             footer: non_empty(&clinic.receipt_footer),
+            notice: Some(E_RECEIPT_NOTICE.to_string()),
         })
     })
 }

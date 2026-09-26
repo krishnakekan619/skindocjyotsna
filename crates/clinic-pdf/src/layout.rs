@@ -175,7 +175,12 @@ pub fn layout_receipt(data: &ReceiptData, fonts: &LoadedFonts, ids: &FontIds) ->
     let mut pages = Pages::new(fonts, ids);
     header(&mut pages, data);
     table_header(&mut pages);
+    let mut section = "";
     for line in &data.lines {
+        if !line.section.is_empty() && line.section != section {
+            section_heading(&mut pages, data, &line.section);
+            section = line.section.as_str();
+        }
         item_line(&mut pages, data, line);
     }
     totals(&mut pages, data);
@@ -223,6 +228,17 @@ fn table_header(p: &mut Pages<'_>) {
     p.rule();
 }
 
+fn section_heading(p: &mut Pages<'_>, data: &ReceiptData, title: &str) {
+    if p.ensure_space(Pages::line_height(SMALL) + Pages::line_height(BODY)) {
+        p.text(&format!("{} (continued)", data.bill_no), MARGIN_MM, SMALL, Weight::Regular, Align::Left, GREY);
+        p.advance(SMALL);
+        table_header(p);
+    }
+    p.y += 1.0;
+    p.text(&title.to_uppercase(), ITEM_X, SMALL, Weight::Bold, Align::Left, GREY);
+    p.advance(SMALL);
+}
+
 fn item_line(p: &mut Pages<'_>, data: &ReceiptData, line: &ReceiptLine) {
     let not_supplied = line.not_supplied_qty > 0;
     let detail = if not_supplied {
@@ -252,9 +268,13 @@ fn item_line(p: &mut Pages<'_>, data: &ReceiptData, line: &ReceiptLine) {
 }
 
 fn totals(p: &mut Pages<'_>, data: &ReceiptData) {
-    let mut rows: Vec<(String, String, bool)> = vec![("Subtotal".into(), money(data.subtotal), false)];
+    let mut rows: Vec<(String, String, bool)> = if data.breakdown.is_empty() {
+        vec![("Subtotal".into(), money(data.subtotal), false)]
+    } else {
+        data.breakdown.iter().map(|row| (row.label.clone(), money(row.amount), false)).collect()
+    };
     if data.discount != Paise::ZERO {
-        rows.push(("Discount".into(), format!("-{}", money(data.discount)), false));
+        rows.push((data.discount_label.clone(), format!("-{}", money(data.discount)), false));
     }
     if data.tax != Paise::ZERO {
         rows.push((data.tax_label.clone(), money(data.tax), false));
@@ -298,6 +318,12 @@ fn totals(p: &mut Pages<'_>, data: &ReceiptData) {
         p.y += 3.0;
         p.text(footer, PAGE_WIDTH_MM / 2.0, BODY, Weight::Regular, Align::Center, BLACK);
         p.advance(BODY);
+    }
+    if let Some(notice) = &data.notice {
+        p.y += 2.0;
+        let notice = fit_text(&p.fonts.regular, notice, SMALL, RIGHT_MM - MARGIN_MM);
+        p.text(&notice, PAGE_WIDTH_MM / 2.0, SMALL, Weight::Regular, Align::Center, GREY);
+        p.advance(SMALL);
     }
 }
 

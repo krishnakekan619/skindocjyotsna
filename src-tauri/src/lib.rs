@@ -63,7 +63,11 @@ pub fn run() {
             app.manage(LogGuard(init_logging(&paths)?));
             let version = app.package_info().version.to_string();
             tracing::info!(%version, os = std::env::consts::OS, "SkinDocJyotsna starting");
-            let db = clinic_sqlite::Database::open(&paths.database_file())?;
+            // A new version that changes the database first saves a "pre-upgrade" backup.
+            let (db, upgrade_backup) = clinic_sqlite::Database::open_with_upgrade_backup(&paths.database_file(), &paths.backup_dir, &version)?;
+            if let Some(file) = upgrade_backup {
+                tracing::info!(file = %file.file_name, "backup made before upgrading the database");
+            }
             app.manage(AppState {
                 paths,
                 db: Mutex::new(db),
@@ -112,9 +116,15 @@ pub fn run() {
             commands::inventory::list_stock_ledger,
             commands::inventory::list_expiring,
             commands::inventory::search_products_for_sale,
+            commands::inventory::recent_products_for_sale,
             commands::clients::search_clients,
             commands::clients::save_client,
             commands::clients::get_client_profile,
+            commands::clients::check_client_duplicates,
+            commands::clients::find_duplicate_clients,
+            commands::clients::merge_clients,
+            commands::catalog::list_services,
+            commands::catalog::save_service,
             commands::billing::quote_bill,
             commands::billing::finalize_bill,
             commands::billing::list_bills,
@@ -125,6 +135,7 @@ pub fn run() {
             commands::billing::get_receipt,
             commands::billing::export_receipt_pdf,
             commands::billing::open_export,
+            commands::billing::open_whatsapp,
             commands::reports::get_dashboard,
             commands::reports::sales_report,
             commands::reports::product_sales_report,

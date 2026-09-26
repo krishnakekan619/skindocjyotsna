@@ -1,27 +1,54 @@
-import { useState } from 'react';
-import { Alert, Box, Button, Dialog, DialogActions, DialogContent, DialogTitle, Stack, Typography } from '@mui/material';
-import { api, type BillDetail } from '../../api';
+import { useEffect, useRef, useState } from 'react';
+import { Alert, Box, Button, Dialog, DialogActions, DialogContent, DialogContentText, DialogTitle, Stack, Typography } from '@mui/material';
+import { api, isCommandError, type BillDetail, type ClientRow } from '../../api';
 import { useApp } from '../../app/AppContext';
 import { ConfirmDialog, ErrorAlert, Loading, useLoader } from '../../components/common';
-import { t } from '../../i18n/en';
+import { MOD_KEY, t } from '../../i18n/en';
 import { todayIso, toIso } from '../../lib/dates';
 import { rupees } from '../../lib/money';
+import { ClientDialog } from '../clients/ClientDialog';
 import { ReceiptPreview } from '../receipt/ReceiptPreview';
 import { BillStatusChip } from './BillStatusChip';
 import { ReturnDialog } from './ReturnDialog';
 
-/** One bill: the receipt as printed, plus PDF / print / return / correct / cancel. */
-export function BillDetailDialog({ billId, onClose, onChanged }: { billId: number; onClose: () => void; onChanged: () => void }) {
+/**
+ * One bill: the receipt as printed, plus print / PDF / WhatsApp / return / correct / cancel.
+ * Right after Finalize, `savedMessage` is shown on top and `autoPrint` opens the print dialog.
+ */
+export function BillDetailDialog({
+  billId,
+  onClose,
+  onChanged,
+  savedMessage,
+  autoPrint = false,
+}: {
+  billId: number;
+  onClose: () => void;
+  onChanged: () => void;
+  savedMessage?: string | undefined;
+  autoPrint?: boolean;
+}) {
   const { isAdmin, navigate, notify } = useApp();
   const [version, setVersion] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const [cancelling, setCancelling] = useState(false);
   const [returning, setReturning] = useState(false);
+  const [noPhone, setNoPhone] = useState<string | null>(null);
+  const [editingClient, setEditingClient] = useState<ClientRow | null>(null);
+  const printed = useRef(false);
   const { data, error: loadError } = useLoader(async () => {
     const [detail, receipt] = await Promise.all([api.getBill(billId), api.getReceipt(billId)]);
     return { detail, receipt };
   }, [billId, version]);
+
+  // "Finalize & print": print as soon as the receipt is on screen (once).
+  useEffect(() => {
+    if (autoPrint && data && !printed.current) {
+      printed.current = true;
+      window.setTimeout(() => window.print(), 300);
+    }
+  }, [autoPrint, data]);
 
   const changed = () => {
     setVersion((v) => v + 1);
@@ -39,6 +66,32 @@ export function BillDetailDialog({ billId, onClose, onChanged }: { billId: numbe
       setError(e);
     } finally {
       setBusy(false);
+    }
+  };
+
+  /** Opens the clinic's WhatsApp on the client's chat with the message typed and the PDF copied. */
+  const sendWhatsApp = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const handoff = await api.openWhatsApp(billId);
+      notify(handoff.pdfCopied ? t.bills.whatsappReady(handoff.clientName, MOD_KEY) : t.bills.whatsappDrag(handoff.clientName), 'info');
+    } catch (e) {
+      if (isCommandError(e) && e.code === 'NO_PHONE') setNoPhone(e.message);
+      else setError(e);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const addMobileNumber = async () => {
+    const clientId = data?.detail.bill.clientId;
+    setNoPhone(null);
+    if (!clientId) return;
+    try {
+      setEditingClient((await api.getClientProfile(clientId, null, null)).client);
+    } catch (e) {
+      setError(e);
     }
   };
 
@@ -71,6 +124,11 @@ export function BillDetailDialog({ billId, onClose, onChanged }: { billId: numbe
         ) : (
           <Stack spacing={2}>
             <Stack spacing={1} className="no-print">
+              {savedMessage && (
+                <Alert severity="success" sx={{ fontSize: '1.05rem' }}>
+                  {savedMessage}
+                </Alert>
+              )}
               {bill?.replacesBillNo && <Alert severity="info">{t.bills.replaces}: {bill.replacesBillNo}</Alert>}
               {bill?.correctedByBillNo && <Alert severity="warning">{t.bills.correctedBy}: {bill.correctedByBillNo}</Alert>}
               {bill?.cancelReason && (
@@ -91,8 +149,8 @@ export function BillDetailDialog({ billId, onClose, onChanged }: { billId: numbe
           </Stack>
         )}
       </DialogContent>
-      <DialogActions className="no-print">
-        {data && bill?.status === 'FINALIZED' && (
+      <DialogActions className="no-print" sx={{ flexWrap: 'wrap', gap: 1 }}>
+        {data && bill?.status === 'FINALIZED' && !savedMessage && (
           <>
             {returnable && <Button onClick={() => setReturning(true)}>{t.bills.returnItems}</Button>}
             {!hasReturns && (isAdmin || sameDay) && <Button onClick={() => correct(data.detail)}>{t.bills.correct}</Button>}
@@ -104,14 +162,19 @@ export function BillDetailDialog({ billId, onClose, onChanged }: { billId: numbe
           </>
         )}
         <Box sx={{ flexGrow: 1 }} />
-        <Button onClick={() => window.print()} disabled={!data}>
+        <Button variant="outlined" onClick={() => window.print()} disabled={!data}>
           {t.bills.print}
         </Button>
-        <Button onClick={savePdf} disabled={!data || busy}>
+        <Button variant="outlined" onClick={savePdf} disabled={!data || busy}>
           {t.bills.savePdf}
         </Button>
+        {bill?.status === 'FINALIZED' && (
+          <Button variant="outlined" color="success" onClick={() => void sendWhatsApp()} disabled={!data || busy}>
+            {t.bills.sendWhatsApp}
+          </Button>
+        )}
         <Button variant="contained" onClick={onClose}>
-          {t.common.close}
+          {savedMessage ? t.nav.newBill : t.common.close}
         </Button>
       </DialogActions>
       <ConfirmDialog
@@ -128,6 +191,32 @@ export function BillDetailDialog({ billId, onClose, onChanged }: { billId: numbe
         }}
         onClose={() => setCancelling(false)}
       />
+      {noPhone !== null && (
+        <Dialog open onClose={() => setNoPhone(null)} maxWidth="xs" fullWidth>
+          <DialogTitle>{t.bills.noPhoneTitle}</DialogTitle>
+          <DialogContent>
+            <DialogContentText>{noPhone}</DialogContentText>
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => setNoPhone(null)}>{t.bills.continueWithoutWhatsApp}</Button>
+            {bill?.clientId && (
+              <Button variant="contained" onClick={() => void addMobileNumber()}>
+                {t.bills.addMobile}
+              </Button>
+            )}
+          </DialogActions>
+        </Dialog>
+      )}
+      {editingClient && (
+        <ClientDialog
+          client={editingClient}
+          onClose={() => setEditingClient(null)}
+          onSaved={() => {
+            setEditingClient(null);
+            void sendWhatsApp(); // number added: carry on straight to WhatsApp
+          }}
+        />
+      )}
       {returning && data && (
         <ReturnDialog
           detail={data.detail}

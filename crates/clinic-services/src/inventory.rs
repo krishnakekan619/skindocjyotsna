@@ -514,6 +514,26 @@ pub(crate) fn sale_product(c: &Connection, product: &ProductRow, today: Date) ->
 
 /// Active products matching the text, with what can be sold today. Out-of-stock products are
 /// included (available 0) so they can be recorded as "not supplied" (DEC-002).
+/// Recently sold products, for one-click adding on the New Bill screen.
+pub fn recent_for_sale(db: &Database, actor: &Session, now: i64) -> Result<Vec<SaleProduct>, ServiceError> {
+    actor.require(Permission::CreateBills)?;
+    db.read(|c| {
+        let (_, today) = clinic_today(c, now)?;
+        let today_text = today.to_string();
+        let mut products = Vec::new();
+        for id in clinic_sqlite::repo::billing::recent_product_ids(c, 8)? {
+            let rows = repo::query_products(
+                c,
+                &ProductQuery { text: "", category_id: None, active_only: true, stock: "ALL", product_id: Some(id), today: &today_text, limit: 1 },
+            )?;
+            for row in &rows {
+                products.push(sale_product(c, row, today)?);
+            }
+        }
+        Ok(products)
+    })
+}
+
 pub fn search_for_sale(db: &Database, actor: &Session, text: &str, now: i64) -> Result<Vec<SaleProduct>, ServiceError> {
     actor.require(Permission::CreateBills)?;
     db.read(|c| {

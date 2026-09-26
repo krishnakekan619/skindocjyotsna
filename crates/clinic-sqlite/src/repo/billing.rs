@@ -56,6 +56,27 @@ pub struct BillItemRow {
     pub batches: Vec<ItemBatchRow>,
 }
 
+/// A consultation or procedure line of a bill.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceItemRow {
+    pub id: i64,
+    pub bill_id: i64,
+    pub line_no: i64,
+    pub service_id: i64,
+    /// `CONSULTATION` or `PROCEDURE`.
+    pub kind: String,
+    pub name: String,
+    pub qty: i64,
+    pub unit_price_paise: i64,
+    pub default_price_paise: i64,
+    pub discount_eligible: bool,
+    pub discount_share_paise: i64,
+    pub gst_rate_bp: i64,
+    pub tax_paise: i64,
+    pub line_total_paise: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ItemBatchRow {
@@ -152,6 +173,35 @@ pub fn insert_item(conn: &Connection, i: &NewBillItem<'_>) -> rusqlite::Result<i
         params![
             i.bill_id, i.line_no, i.product_id, i.product_name, i.sku, i.unit, i.qty, i.not_supplied_qty,
             i.unit_price_paise, i.discount_share_paise, i.gst_rate_bp, i.tax_paise, i.line_total_paise
+        ],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+pub struct NewServiceItem<'a> {
+    pub bill_id: i64,
+    pub line_no: i64,
+    pub service_id: i64,
+    pub kind: &'a str,
+    pub name: &'a str,
+    pub qty: i64,
+    pub unit_price_paise: i64,
+    pub default_price_paise: i64,
+    pub discount_eligible: bool,
+    pub discount_share_paise: i64,
+    pub gst_rate_bp: i64,
+    pub tax_paise: i64,
+    pub line_total_paise: i64,
+}
+
+pub fn insert_service_item(conn: &Connection, i: &NewServiceItem<'_>) -> rusqlite::Result<i64> {
+    conn.execute(
+        "INSERT INTO bill_service_item (bill_id, line_no, service_id, kind, name, qty, unit_price_paise, default_price_paise,
+                                        discount_eligible, discount_share_paise, gst_rate_bp, tax_paise, line_total_paise)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+        params![
+            i.bill_id, i.line_no, i.service_id, i.kind, i.name, i.qty, i.unit_price_paise, i.default_price_paise,
+            i.discount_eligible, i.discount_share_paise, i.gst_rate_bp, i.tax_paise, i.line_total_paise
         ],
     )?;
     Ok(conn.last_insert_rowid())
@@ -369,6 +419,44 @@ pub fn items(conn: &Connection, bill_id: i64) -> rusqlite::Result<Vec<BillItemRo
             .collect::<rusqlite::Result<_>>()?;
     }
     Ok(rows)
+}
+
+/// Consultation and procedure lines: consultations first, then procedures, in billing order.
+pub fn service_items(conn: &Connection, bill_id: i64) -> rusqlite::Result<Vec<ServiceItemRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, bill_id, line_no, service_id, kind, name, qty, unit_price_paise, default_price_paise, discount_eligible,
+                discount_share_paise, gst_rate_bp, tax_paise, line_total_paise
+         FROM bill_service_item WHERE bill_id = ?1 ORDER BY kind = 'PROCEDURE', line_no",
+    )?;
+    stmt.query_map([bill_id], |r| {
+        Ok(ServiceItemRow {
+            id: r.get(0)?,
+            bill_id: r.get(1)?,
+            line_no: r.get(2)?,
+            service_id: r.get(3)?,
+            kind: r.get(4)?,
+            name: r.get(5)?,
+            qty: r.get(6)?,
+            unit_price_paise: r.get(7)?,
+            default_price_paise: r.get(8)?,
+            discount_eligible: r.get(9)?,
+            discount_share_paise: r.get(10)?,
+            gst_rate_bp: r.get(11)?,
+            tax_paise: r.get(12)?,
+            line_total_paise: r.get(13)?,
+        })
+    })?
+    .collect()
+}
+
+/// Products most recently sold (for the "recent products" shortcuts on the New Bill screen).
+pub fn recent_product_ids(conn: &Connection, limit: u32) -> rusqlite::Result<Vec<i64>> {
+    let mut stmt = conn.prepare(
+        "SELECT i.product_id FROM bill_item i JOIN bill b ON b.id = i.bill_id
+         WHERE i.qty > 0 AND b.status = 'FINALIZED'
+         GROUP BY i.product_id ORDER BY MAX(b.finalized_at) DESC, MAX(i.id) DESC LIMIT ?1",
+    )?;
+    stmt.query_map([i64::from(limit)], |r| r.get(0))?.collect()
 }
 
 pub fn payments(conn: &Connection, bill_id: i64) -> rusqlite::Result<Vec<PaymentRow>> {

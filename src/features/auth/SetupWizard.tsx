@@ -18,6 +18,8 @@ const DEFAULT_CLINIC: ClinicSettings = {
   roundToRupee: true,
   utcOffsetMinutes: 330,
   returnWindowDays: 7,
+  // Empty = the standard SkinDoc message (filled in by the app).
+  whatsappMessage: '',
 };
 
 /** First run only: clinic details, the owner account and (optionally) a second admin (DEC-025). */

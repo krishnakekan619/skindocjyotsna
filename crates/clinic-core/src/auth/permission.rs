@@ -28,6 +28,8 @@ pub enum Permission {
     ViewAuditLog,
     ManageBackups,
     ViewSystemInfo,
+    /// Merge duplicate client records (moves bills; cannot be undone automatically).
+    MergeClients,
 }
 
 impl Role {
@@ -53,7 +55,7 @@ impl Role {
 mod tests {
     use super::*;
 
-    const ALL: [Permission; 15] = [
+    const ALL: [Permission; 16] = [
         Permission::UseApp,
         Permission::ManageOwnSecurity,
         Permission::ViewInventory,
@@ -69,6 +71,7 @@ mod tests {
         Permission::ViewAuditLog,
         Permission::ManageBackups,
         Permission::ViewSystemInfo,
+        Permission::MergeClients,
     ];
 
     #[test]

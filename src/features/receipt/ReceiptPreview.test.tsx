@@ -14,10 +14,12 @@ const sample: ReceiptData = {
   dateTime: '25-Sep-2026 10:42',
   clientLabel: 'John Doe (CL-000045)',
   lines: [
-    { name: 'Paracetamol 500mg', detail: 'Batch A23 · Exp 12/2026', qty: 2, unitPrice: 2000, amount: 4000, notSuppliedQty: 0 },
-    { name: 'Sunscreen SPF 50', detail: null, qty: 0, unitPrice: 0, amount: 0, notSuppliedQty: 1 },
+    { name: 'Paracetamol 500mg', detail: 'Batch A23 · Exp 12/2026', qty: 2, unitPrice: 2000, amount: 4000, notSuppliedQty: 0, section: '' },
+    { name: 'Sunscreen SPF 50', detail: null, qty: 0, unitPrice: 0, amount: 0, notSuppliedQty: 1, section: '' },
   ],
   subtotal: 16000,
+  breakdown: [],
+  discountLabel: 'Discount',
   discount: 1000,
   taxLabel: 'GST included',
   tax: 2118,
@@ -28,6 +30,7 @@ const sample: ReceiptData = {
   changeDue: 5000,
   billedBy: 'Priya',
   footer: 'Thank you',
+  notice: 'This is a computer-generated e-receipt and does not require a signature or stamp.',
 };
 
 describe('ReceiptPreview', () => {
@@ -53,5 +56,34 @@ describe('ReceiptPreview', () => {
   it('shows a cancellation banner when present', () => {
     const cancelled = renderToStaticMarkup(<ReceiptPreview data={{ ...sample, statusBanner: 'CANCELLED' }} />);
     expect(cancelled).toContain('CANCELLED');
+  });
+});
+
+describe('ReceiptPreview with consultation and procedures', () => {
+  const consultation = { name: 'General Consultation', detail: null, qty: 1, unitPrice: 50000, amount: 50000, notSuppliedQty: 0, section: 'Consultation' };
+  const medicine = { ...sample.lines[0]!, section: 'Medicines & Products' };
+  const html = renderToStaticMarkup(
+    <ReceiptPreview
+      data={{
+        ...sample,
+        lines: [consultation, medicine],
+        breakdown: [
+          { label: 'Consultation', amount: 50000 },
+          { label: 'Medicines & products', amount: 4000 },
+        ],
+        discountLabel: 'Discount on medicines',
+      }}
+    />,
+  );
+
+  it('groups lines under section headings and shows section subtotals', () => {
+    expect(html).toContain('receipt__section');
+    expect(html).toContain('Medicines &amp; Products');
+    expect(html).toContain('Discount on medicines');
+    expect(html).not.toContain('Subtotal');
+  });
+
+  it('says that an e-receipt needs no signature or stamp', () => {
+    expect(html).toContain('does not require a signature or stamp');
   });
 });

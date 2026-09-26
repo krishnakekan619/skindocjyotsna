@@ -54,12 +54,18 @@ export const tauriApi: ClinicApi = {
   listStockLedger: (productId, limit) => call('list_stock_ledger', { productId, limit }),
   listExpiring: (withinDays) => call('list_expiring', { withinDays }),
   searchProductsForSale: (text) => call('search_products_for_sale', { text }),
+  recentProductsForSale: () => call('recent_products_for_sale'),
 
   searchClients: (text, includeInactive) => call('search_clients', { text, includeInactive }),
   saveClient: (input) => call('save_client', { input }),
   getClientProfile: (clientId, fromDate, toDate) => call('get_client_profile', { clientId, fromDate, toDate }),
+  checkClientDuplicates: (query) => call('check_client_duplicates', { query }),
+  findDuplicateClients: () => call('find_duplicate_clients'),
+  mergeClients: (primaryId, secondaryId) => call('merge_clients', { primaryId, secondaryId }),
+  listServices: (includeInactive) => call('list_services', { includeInactive }),
+  saveService: (input) => call('save_service', { input }),
 
-  quoteBill: (lines, discount, correctingBillId) => call('quote_bill', { lines, discount, correctingBillId }),
+  quoteBill: (lines, services, discount, correctingBillId) => call('quote_bill', { lines, services, discount, correctingBillId }),
   finalizeBill: (input) => call('finalize_bill', { input }),
   listBills: (filter) => call('list_bills', { filter }),
   getBill: (billId) => call('get_bill', { billId }),
@@ -69,6 +75,7 @@ export const tauriApi: ClinicApi = {
   getReceipt: (billId) => call('get_receipt', { billId }),
   exportReceiptPdf: (billId) => call('export_receipt_pdf', { billId }),
   openExport: (fileName) => call('open_export', { fileName }),
+  openWhatsApp: (billId) => call('open_whatsapp', { billId }),
 
   getDashboard: () => call('get_dashboard'),
   salesReport: (range) => call('sales_report', { range }),

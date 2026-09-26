@@ -81,3 +81,9 @@ pub fn search_products_for_sale(state: State<'_, AppState>, text: String) -> Res
     let session = state.session(Permission::CreateBills)?;
     Ok(inventory::search_for_sale(&*state.db()?, &session, &text, now())?)
 }
+
+#[tauri::command(async)]
+pub fn recent_products_for_sale(state: State<'_, AppState>) -> Result<Vec<SaleProduct>, CommandError> {
+    let session = state.session(Permission::CreateBills)?;
+    Ok(inventory::recent_for_sale(&*state.db()?, &session, now())?)
+}

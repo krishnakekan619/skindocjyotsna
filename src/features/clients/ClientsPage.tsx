@@ -6,6 +6,7 @@ import { EmptyState, ErrorAlert, Loading, PageHeader, StatusChip, useLoader } fr
 import { t } from '../../i18n/en';
 import { formatDateTime } from '../../lib/dates';
 import { ClientDialog } from './ClientDialog';
+import { DuplicatesDialog } from './DuplicatesDialog';
 
 export function ClientsPage() {
   const { navigate, notify } = useApp();
@@ -13,6 +14,7 @@ export function ClientsPage() {
   const [query, setQuery] = useState('');
   const [includeInactive, setIncludeInactive] = useState(false);
   const [editing, setEditing] = useState<ClientRow | 'new' | null>(null);
+  const [duplicates, setDuplicates] = useState(false);
 
   // Search as you type, 250 ms after the last key (brief §35: debounced search).
   useEffect(() => {
@@ -23,7 +25,19 @@ export function ClientsPage() {
 
   return (
     <>
-      <PageHeader title={t.clients.title} actions={<Button variant="contained" onClick={() => setEditing('new')}>{t.clients.add}</Button>} />
+      <PageHeader
+        title={t.clients.title}
+        actions={
+          <>
+            <Button variant="outlined" onClick={() => setDuplicates(true)}>
+              {t.clients.findDuplicates}
+            </Button>
+            <Button variant="contained" onClick={() => setEditing('new')}>
+              {t.clients.add}
+            </Button>
+          </>
+        }
+      />
       <Stack direction="row" spacing={2} sx={{ mb: 2, alignItems: 'center' }}>
         <TextField label={t.common.search} placeholder={t.clients.searchHint} value={text} onChange={(e) => setText(e.target.value)} autoFocus sx={{ flexGrow: 1, maxWidth: 480 }} />
         <FormControlLabel control={<Checkbox checked={includeInactive} onChange={(e) => setIncludeInactive(e.target.checked)} />} label={t.common.showInactive} />
@@ -71,12 +85,19 @@ export function ClientsPage() {
           initialName={editing === 'new' ? text : ''}
           onClose={() => setEditing(null)}
           onSaved={(c) => {
+            // A new client, or an existing one picked instead of creating a duplicate: open it.
+            if (editing === 'new') {
+              setEditing(null);
+              navigate({ name: 'client', clientId: c.id });
+              return;
+            }
             setEditing(null);
             notify(`${c.fullName} (${c.clientCode}) ${t.common.saved.toLowerCase()}`);
             reload();
           }}
         />
       )}
+      {duplicates && <DuplicatesDialog onClose={() => setDuplicates(false)} onMerged={reload} />}
     </>
   );
 }

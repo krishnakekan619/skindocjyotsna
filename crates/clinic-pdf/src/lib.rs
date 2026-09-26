@@ -8,7 +8,7 @@ mod receipt;
 
 use printpdf::{Mm, ParsedFont, PdfDocument, PdfPage, PdfSaveOptions};
 
-pub use receipt::{ReceiptData, ReceiptLine, ReceiptPayment, sample_receipt};
+pub use receipt::{E_RECEIPT_NOTICE, ReceiptData, ReceiptLine, ReceiptPayment, ReceiptTotal, sample_receipt};
 
 #[derive(Debug, thiserror::Error)]
 pub enum PdfError {

@@ -3,7 +3,7 @@
 A local-first clinic inventory, billing and client management app for Windows and macOS.
 Built with **Tauri 2 + React + TypeScript + SQLite**, with a Rust core. It works fully offline.
 
-> **Status: v1 feature-complete, in testing.** Sign-in with roles and PIN lock, inventory with batches/FEFO and an immutable stock ledger, clients, billing with A5 PDF receipts, returns/cancel/correct, reports, audit log and automatic backups. See `docs/DESIGN-v2-desktop.md` for the design and `docs/DECISIONS.md` for the decisions made so far.
+> **Status: v0.3, in testing.** One-screen billing with consultations, procedures and medicines; duplicate-safe clients with merge; WhatsApp e-receipt handoff; sign-in with roles and PIN lock, inventory with batches/FEFO and an immutable stock ledger, A5 PDF receipts, returns/cancel/correct, reports, audit log and automatic backups. See `docs/DESIGN-v2-desktop.md` for the design and `docs/DECISIONS.md` for the decisions made so far.
 
 ## Project layout
 

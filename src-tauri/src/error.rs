@@ -65,6 +65,11 @@ impl From<ServiceError> for CommandError {
             E::DiscountApprovalRequired { cap_percent } => {
                 staff("DISCOUNT_APPROVAL_REQUIRED", format!("Discounts above {cap_percent}% need an administrator's approval."))
             }
+            E::PriceApprovalRequired => {
+                staff("DISCOUNT_APPROVAL_REQUIRED", "A price below the standard fee needs an administrator's approval.".into())
+            }
+            E::PossibleDuplicate(message) => staff("POSSIBLE_DUPLICATE", message),
+            E::NoPhone(message) => staff("NO_PHONE", message),
             E::Corrupt(detail) => {
                 tracing::error!(%detail, "stored data is invalid");
                 CommandError::internal()

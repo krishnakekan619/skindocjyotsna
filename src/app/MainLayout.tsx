@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
-import { Alert, AppBar, Box, Button, Divider, Drawer, List, ListItemButton, ListItemText, ListSubheader, Snackbar, Toolbar, Typography } from '@mui/material';
+import { Alert, AppBar, Box, Button, Divider, Drawer, List, ListItemButton, ListItemText, ListSubheader, Snackbar, Stack, Toolbar, Typography } from '@mui/material';
 import { api, type AppStatus, type Session } from '../api';
 import { DashboardPage } from '../features/dashboard/DashboardPage';
 import { BillsPage } from '../features/billing/BillsPage';
@@ -14,29 +14,34 @@ import { ReportsPage } from '../features/reports/ReportsPage';
 import { AuditLogPage } from '../features/settings/AuditLogPage';
 import { ClinicSettingsPage } from '../features/settings/ClinicSettingsPage';
 import { MySecurityPage } from '../features/settings/MySecurityPage';
+import { ServicesPage } from '../features/settings/ServicesPage';
 import { SystemPage } from '../features/settings/SystemPage';
 import { UsersPage } from '../features/settings/UsersPage';
-import { t } from '../i18n/en';
+import { MOD_KEY, t } from '../i18n/en';
 import { AppContext, type AppContextValue, type NoticeSeverity, type Page } from './AppContext';
 import { useIdleLock } from './useIdleLock';
 
-const DRAWER_WIDTH = 232;
+const DRAWER_WIDTH = 248;
 
 type NavItem = { page: Page; label: string; adminOnly?: boolean };
+/** The three everyday actions, always visible at the top (v0.3 brief §2). */
+const MAIN_ACTIONS: { page: Page; label: string; icon: string; hint?: string }[] = [
+  { page: { name: 'newBill' }, label: t.nav.newBill, icon: '+', hint: `${MOD_KEY}+N` },
+  { page: { name: 'clients' }, label: t.nav.clients, icon: '👤' },
+  { page: { name: 'products' }, label: t.nav.products, icon: '📦' },
+];
+
 const NAV: { section: string; items: NavItem[] }[] = [
   {
     section: '',
     items: [
       { page: { name: 'dashboard' }, label: t.nav.dashboard },
-      { page: { name: 'newBill' }, label: t.nav.newBill },
       { page: { name: 'bills' }, label: t.nav.bills },
-      { page: { name: 'clients' }, label: t.nav.clients },
     ],
   },
   {
     section: 'Inventory',
     items: [
-      { page: { name: 'products' }, label: t.nav.products },
       { page: { name: 'expiry' }, label: t.nav.expiry },
       { page: { name: 'ledger' }, label: t.nav.ledger, adminOnly: true },
       { page: { name: 'catalog' }, label: t.nav.catalog, adminOnly: true },
@@ -47,6 +52,7 @@ const NAV: { section: string; items: NavItem[] }[] = [
     section: t.nav.settings,
     items: [
       { page: { name: 'clinic' }, label: t.nav.clinic, adminOnly: true },
+      { page: { name: 'services' }, label: t.nav.services, adminOnly: true },
       { page: { name: 'users' }, label: t.nav.users, adminOnly: true },
       { page: { name: 'security' }, label: t.nav.security },
       { page: { name: 'audit' }, label: t.nav.audit, adminOnly: true },
@@ -79,6 +85,8 @@ function renderPage(page: Page): ReactNode {
       return <ReportsPage />;
     case 'clinic':
       return <ClinicSettingsPage />;
+    case 'services':
+      return <ServicesPage />;
     case 'users':
       return <UsersPage />;
     case 'security':
@@ -100,12 +108,12 @@ export function MainLayout({ status, session, setStatus }: { status: AppStatus; 
   }, [setStatus]);
   useIdleLock(status.idleLockMinutes, lock);
 
-  // F1: new bill from anywhere (design §9 shortcuts).
+  // Ctrl/Cmd+N (or F1): new bill from anywhere (brief §28). Does not clear a bill in progress.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'F1') {
+      if (e.key === 'F1' || ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'n')) {
         e.preventDefault();
-        setPage({ name: 'newBill' });
+        setPage((current) => (current.name === 'newBill' ? current : { name: 'newBill' }));
       }
     };
     window.addEventListener('keydown', onKey);
@@ -145,6 +153,39 @@ export function MainLayout({ status, session, setStatus }: { status: AppStatus; 
       <Drawer variant="permanent" className="no-print" sx={{ width: DRAWER_WIDTH, flexShrink: 0, '& .MuiDrawer-paper': { width: DRAWER_WIDTH, boxSizing: 'border-box' } }}>
         <Toolbar />
         <Box sx={{ overflow: 'auto' }}>
+          <Stack spacing={1} sx={{ p: 1.5, pb: 1 }}>
+            {MAIN_ACTIONS.map((action, index) => {
+              const selected = page.name === action.page.name;
+              return (
+                <Button
+                  key={action.page.name}
+                  variant={index === 0 || selected ? 'contained' : 'outlined'}
+                  color={index === 0 ? 'primary' : 'inherit'}
+                  onClick={() => setPage(action.page)}
+                  sx={{
+                    justifyContent: 'flex-start',
+                    py: index === 0 ? 1.6 : 1.1,
+                    fontSize: index === 0 ? '1.1rem' : '1rem',
+                    bgcolor: index !== 0 && selected ? 'background.paper' : undefined,
+                    borderColor: 'divider',
+                  }}
+                >
+                  <Box component="span" sx={{ width: 28, fontSize: '1.1rem', textAlign: 'center', mr: 1 }}>
+                    {action.icon}
+                  </Box>
+                  <Box component="span" sx={{ flexGrow: 1, textAlign: 'left' }}>
+                    {action.label}
+                  </Box>
+                  {action.hint && (
+                    <Typography component="span" variant="caption" sx={{ opacity: 0.8 }}>
+                      {action.hint}
+                    </Typography>
+                  )}
+                </Button>
+              );
+            })}
+          </Stack>
+          <Divider />
           {NAV.map((group, index) => {
             const items = group.items.filter((item) => isAdmin || !item.adminOnly);
             if (items.length === 0) return null;

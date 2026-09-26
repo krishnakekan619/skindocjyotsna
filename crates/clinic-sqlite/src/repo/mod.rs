@@ -6,5 +6,6 @@ pub mod audit;
 pub mod billing;
 pub mod clients;
 pub mod inventory;
+pub mod services;
 pub mod settings;
 pub mod users;

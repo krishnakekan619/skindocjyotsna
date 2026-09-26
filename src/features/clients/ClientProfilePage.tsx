@@ -42,7 +42,8 @@ export function ClientProfilePage({ clientId }: { clientId: number }) {
       />
       <Stack spacing={2}>
         <Typography color="text.secondary">
-          {t.clients.visits}: {data.visitCount} · {t.clients.totalSpent}: {rupees(data.totalSpentPaise)} · {t.clients.lastVisit}: {formatDateTime(c.lastVisitAt)}
+          {t.clients.totalVisits}: {data.visitCount} · {t.clients.totalBills}: {data.billCount} · {t.clients.lastVisit}: {formatDateTime(c.lastVisitAt)} · {t.clients.totalSpent}:{' '}
+          {rupees(data.totalSpentPaise)}
           {c.address ? ` · ${c.address}` : ''}
           {c.emergencyContact ? ` · ${t.clients.emergency}: ${c.emergencyContact}` : ''}
         </Typography>
@@ -66,9 +67,14 @@ export function ClientProfilePage({ clientId }: { clientId: number }) {
                       <BillStatusChip status={v.bill.status} returned={v.bill.returnedPaise > 0} />
                     </Stack>
                     <Typography variant="body2" color="text.secondary" sx={{ pl: 1 }}>
-                      {v.items
-                        .map((i) => (i.qty > 0 ? `${i.productName} × ${i.qty}${i.returnedQty ? ` (${t.bills.returned.toLowerCase()} ${i.returnedQty})` : ''}` : `${i.productName} × ${i.notSuppliedQty} (${t.billing.notSuppliedShort.toLowerCase()})`))
-                        .join(' · ')}
+                      {[
+                        ...v.services.map((s) => (s.qty > 1 ? `${s.name} × ${s.qty}` : s.name)),
+                        ...v.items.map((i) =>
+                          i.qty > 0
+                            ? `${i.productName} × ${i.qty}${i.returnedQty ? ` (${t.bills.returned.toLowerCase()} ${i.returnedQty})` : ''}`
+                            : `${i.productName} × ${i.notSuppliedQty} (${t.billing.notSuppliedShort.toLowerCase()})`,
+                        ),
+                      ].join(' · ')}
                     </Typography>
                   </Box>
                 ))}

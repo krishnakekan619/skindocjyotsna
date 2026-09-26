@@ -1,6 +1,8 @@
 //! Bill arithmetic, integers only (paise). Prices include GST (design D2); a bill-level
-//! discount is spread over the lines in proportion to their amounts (D6) so that GST and later
-//! refunds stay exact; the total can be rounded to the nearest rupee with a visible round-off (D4).
+//! discount is spread over the discount-eligible lines in proportion to their amounts (D6) so
+//! that GST and later refunds stay exact. Consultation and procedure lines are normally not
+//! eligible, so a medicine discount never reduces them (DEC-030). The total can be rounded to
+//! the nearest rupee with a visible round-off (D4).
 
 use serde::{Deserialize, Serialize};
 
@@ -11,6 +13,8 @@ pub struct LineInput {
     pub unit_price: Paise,
     pub qty: u32,
     pub gst_rate: BasisPoints,
+    /// Whether the bill discount may reduce this line.
+    pub discount_eligible: bool,
 }
 
 /// Bill-level discount. JSON: `{"kind":"NONE"}`, `{"kind":"PERCENT","value":1000}` (basis points)
@@ -38,6 +42,8 @@ pub struct PricedLine {
 pub struct BillTotals {
     pub lines: Vec<PricedLine>,
     pub subtotal: Paise,
+    /// Part of the subtotal the discount applies to (the discount-eligible lines).
+    pub eligible_subtotal: Paise,
     pub discount: Paise,
     pub tax: Paise,
     pub round_off: Paise,
@@ -48,7 +54,7 @@ pub struct BillTotals {
 pub enum PricingError {
     #[error("the amount is too large")]
     Overflow,
-    #[error("the discount is larger than the bill amount")]
+    #[error("the discount is larger than the amount it applies to")]
     DiscountTooLarge,
     #[error("a percentage discount cannot exceed 100%")]
     InvalidPercent,
@@ -60,22 +66,25 @@ pub fn price_bill(lines: &[LineInput], discount: Discount, round_to_rupee: bool)
         .map(|l| l.unit_price.checked_mul_qty(l.qty).map(Paise::value).ok_or(PricingError::Overflow))
         .collect::<Result<_, _>>()?;
     let subtotal = gross.iter().try_fold(0i64, |sum, g| sum.checked_add(*g)).ok_or(PricingError::Overflow)?;
+    // Only eligible lines carry the discount: the others get weight 0 in the allocation.
+    let weights: Vec<i64> = lines.iter().zip(&gross).map(|(l, g)| if l.discount_eligible { *g } else { 0 }).collect();
+    let eligible = weights.iter().sum::<i64>();
     let discount_amount = match discount {
         Discount::None => 0,
         Discount::Percent(rate) => {
             if i64::from(rate.value()) > BASIS_POINTS_PER_WHOLE {
                 return Err(PricingError::InvalidPercent);
             }
-            Paise::new(subtotal).percentage(rate).value()
+            Paise::new(eligible).percentage(rate).value()
         }
         Discount::Amount(amount) => {
-            if amount.value() < 0 || amount.value() > subtotal {
+            if amount.value() < 0 || amount.value() > eligible {
                 return Err(PricingError::DiscountTooLarge);
             }
             amount.value()
         }
     };
-    let shares = allocate_proportionally(discount_amount, &gross);
+    let shares = allocate_proportionally(discount_amount, &weights);
     let priced: Vec<PricedLine> = lines
         .iter()
         .zip(gross.iter().zip(&shares))
@@ -90,6 +99,7 @@ pub fn price_bill(lines: &[LineInput], discount: Discount, round_to_rupee: bool)
         tax: Paise::new(priced.iter().map(|l| l.tax.value()).sum()),
         lines: priced,
         subtotal: Paise::new(subtotal),
+        eligible_subtotal: Paise::new(eligible),
         discount: Paise::new(discount_amount),
         round_off: Paise::new(round_off),
         total: Paise::new(net_total + round_off),
@@ -134,7 +144,27 @@ mod tests {
     use super::*;
 
     fn line(price: i64, qty: u32, gst_bp: u32) -> LineInput {
-        LineInput { unit_price: Paise::new(price), qty, gst_rate: BasisPoints::new(gst_bp) }
+        LineInput { unit_price: Paise::new(price), qty, gst_rate: BasisPoints::new(gst_bp), discount_eligible: true }
+    }
+
+    fn service(price: i64) -> LineInput {
+        LineInput { unit_price: Paise::new(price), qty: 1, gst_rate: BasisPoints::new(0), discount_eligible: false }
+    }
+
+    #[test]
+    fn the_discount_never_reduces_consultation_or_procedures() -> Result<(), PricingError> {
+        // Consultation ₹500 + dressing ₹300 + medicines ₹160, ₹10 off the medicines.
+        let totals = price_bill(&[service(50_000), service(30_000), line(2_000, 2, 1_200), line(12_000, 1, 1_800)], Discount::Amount(Paise::new(1_000)), true)?;
+        assert_eq!(totals.subtotal, Paise::new(96_000));
+        assert_eq!(totals.eligible_subtotal, Paise::new(16_000));
+        assert_eq!((totals.lines[0].discount_share, totals.lines[1].discount_share), (Paise::ZERO, Paise::ZERO));
+        assert_eq!(totals.lines[2].discount_share + totals.lines[3].discount_share, Paise::new(1_000));
+        assert_eq!(totals.total, Paise::new(95_000));
+        // 10% is 10% of the medicines only; more than the medicines is refused.
+        let percent = price_bill(&[service(50_000), line(2_000, 5, 0)], Discount::Percent(BasisPoints::new(1_000)), false)?;
+        assert_eq!(percent.discount, Paise::new(1_000));
+        assert_eq!(price_bill(&[service(50_000), line(2_000, 1, 0)], Discount::Amount(Paise::new(2_001)), false), Err(PricingError::DiscountTooLarge));
+        Ok(())
     }
 
     #[test]

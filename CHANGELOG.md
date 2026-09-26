@@ -1,5 +1,36 @@
 # Changelog
 
+## v0.3.0 (unreleased): receptionist-first billing
+
+### New
+- **Navigation:** three big buttons at the top of the menu: **+ New Bill** (Ctrl/⌘+N), **Clients**, **Products & stock**.
+- **One-screen New Bill:** client, consultation, procedures and medicines on one screen, then payment and Finalize.
+  - Type 2 letters of a name, phone or client ID. Suggestions forgive small spelling mistakes.
+  - **Recent clients** and **recent products** can be picked with one click.
+  - **+ Create "name" as new client** works right on the bill. The new client is selected automatically.
+  - **+ Consultation ₹500** takes one click (other consultation types are in the ▾ menu), and **+ Procedure** picks from a list.
+  - Consultations and procedures never touch stock.
+  - The discount applies to **medicines only** (DEC-030).
+  - Charging less than a standard fee needs administrator approval.
+  - **Finalize & print** (Ctrl/⌘+Enter) and **Finalize only**. The result shows "Bill … created successfully" with Print, Save PDF, **Send via WhatsApp** and New bill.
+  - More shortcuts: F2 jumps to the client search and F4 to the product search.
+- **Receipts:** lines are grouped under Consultation / Procedures / Medicines & Products, with section subtotals and "Discount on medicines". Every receipt says it is a computer-generated e-receipt that needs no signature or stamp.
+- **WhatsApp handoff** (DEC-031):
+  - opens your WhatsApp on the client's chat with the clinic's message typed in (editable in Clinic details);
+  - puts the bill PDF on the clipboard, so press Ctrl/⌘+V, then Send;
+  - if the client has no mobile number, offers **Add mobile number**.
+- **Duplicate clients** (DEC-032):
+  - a warning with **Use this client** before creating a client with the same phone or name;
+  - **Clients → Find duplicates**;
+  - **Merge** for administrators: all bills and payments move to the kept client, and nothing is deleted.
+- **Client profile:** total visits, total bills, last visit and total spent, computed over all bills (not only the latest 200). Consultations and procedures appear in the history.
+- **Settings → Consultations & procedures** (administrators): names, standard prices, GST, order, active/inactive, and whether the discount may apply.
+- **Look and feel:** a warm beige, pink and white theme with a dusty-rose accent, and larger buttons.
+- **Safer upgrades:** the app backs up the database automatically before an update changes it (DEC-033).
+
+### Database
+- Migration 0005 (additive): the `service` catalog (seeded with General/Follow-up Consultation, Dressing, Injection and Nebulization; edit the prices in Settings), `bill_service_item`, `bill_item.discount_eligible`, client `name_key` / `phone_digits` / `merged_into_client_id`, and the merge exception in the bill lock.
+
 ## v0.2.0 (2026-09-26): first feature-complete version
 
 ### What the app does
@@ -57,7 +88,7 @@
 ### Known limitations (planned)
 - **Lockout:** it lasts a fixed 5 minutes and doesn't get longer with repeated lockouts.
 - **Search:** `%` and `_` in a search are treated as spaces.
-- **Client profile:** visit count and total spent are computed from the latest 200 bills.
+- ~~**Client profile:** visit count and total spent are computed from the latest 200 bills.~~ Fixed in v0.3.0.
 - **Startup errors:** on Windows, a failure at start-up (for example, the data folder can't be written) closes the app without a message. The reason is written to the log when logging works.
 - **Product sales report:** it is by bill date; refunds are subtracted whenever they happened.
 - **Drafts:** bills being typed are not saved as drafts; closing the app loses them (DEC-028).

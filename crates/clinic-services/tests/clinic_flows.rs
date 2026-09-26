@@ -5,7 +5,9 @@ use clinic_core::auth::Role;
 use clinic_core::money::{BasisPoints, Paise};
 use clinic_core::pricing::Discount;
 use clinic_services::auth::{self, NewAccount, SetupInput};
-use clinic_services::billing::{self, Approval, BillInput, BillLineInput, CorrectionInput, PaymentInput, ReturnInput, ReturnLineInput};
+use clinic_services::billing::{self, Approval, BillInput, BillLineInput, CorrectionInput, PaymentInput, ReturnInput, ReturnLineInput, ServiceLineInput};
+use clinic_services::catalog::{self, ServiceInput};
+use clinic_services::share;
 use clinic_services::clients::{self, ClientInput};
 use clinic_services::inventory::{self, AdjustInput, ProductFilter, ProductInput, StockInInput};
 use clinic_services::reports::{self, DateRange};
@@ -92,7 +94,7 @@ fn cash(amount: i64) -> Vec<PaymentInput> {
 }
 
 fn bill(key: &str, lines: Vec<BillLineInput>, discount: Discount, payments: Vec<PaymentInput>) -> BillInput {
-    BillInput { idempotency_key: key.into(), client_id: None, lines, discount, payments, amount_received_paise: None, note: String::new(), approval: None }
+    BillInput { idempotency_key: key.into(), client_id: None, lines, services: Vec::new(), discount, payments, amount_received_paise: None, note: String::new(), approval: None }
 }
 
 fn sellable(clinic: &Clinic, product_id: i64) -> Result<i64, ServiceError> {
@@ -109,7 +111,7 @@ fn assert_ledger_consistent(clinic: &Clinic) -> TestResult {
 fn the_example_bill_deducts_stock_and_prices_correctly() -> TestResult {
     let mut clinic = clinic()?;
     let input = bill("bill-key-0001", vec![line(clinic.paracetamol, 2), line(clinic.cream, 1)], Discount::Amount(Paise::new(1_000)), cash(15_000));
-    let quote = billing::quote(&clinic.db, &clinic.reception, &input.lines, input.discount, None, NOW)?;
+    let quote = billing::quote(&clinic.db, &clinic.reception, &input.lines, &[], input.discount, None, NOW)?;
     assert_eq!((quote.subtotal_paise, quote.discount_paise, quote.total_paise), (16_000, 1_000, 15_000));
 
     let done = billing::finalize(&mut clinic.db, &clinic.reception, input, NOW)?;
@@ -160,7 +162,7 @@ fn fefo_sells_the_soonest_expiring_batch_and_never_expired_stock() -> TestResult
 
     // Six months later batch A1 (expiry 2027-06-30) is still fine, but pretend a batch expired.
     let expired_day = NOW + 400 * DAY;
-    let result = billing::quote(&clinic.db, &clinic.reception, &[line(clinic.paracetamol, 1)], Discount::None, None, expired_day);
+    let result = billing::quote(&clinic.db, &clinic.reception, &[line(clinic.paracetamol, 1)], &[], Discount::None, None, expired_day);
     assert!(matches!(result, Err(ServiceError::InsufficientStock { available: 0, .. })), "expired stock is not sellable");
     Ok(())
 }
@@ -195,7 +197,7 @@ fn payments_must_match_and_change_is_calculated() -> TestResult {
 fn large_discounts_by_receptionists_need_an_admin() -> TestResult {
     let mut clinic = clinic()?;
     let mut input = bill("bill-key-0008", vec![line(clinic.cream, 1)], Discount::Percent(BasisPoints::new(2_000)), cash(9_600));
-    let quote = billing::quote(&clinic.db, &clinic.reception, &input.lines, input.discount, None, NOW)?;
+    let quote = billing::quote(&clinic.db, &clinic.reception, &input.lines, &[], input.discount, None, NOW)?;
     assert!(quote.needs_approval);
     assert!(matches!(billing::finalize(&mut clinic.db, &clinic.reception, input.clone(), NOW), Err(ServiceError::DiscountApprovalRequired { cap_percent: 10 })));
     input.approval = Some(Approval { username: "owner".into(), password: "wrong".into() });
@@ -343,6 +345,7 @@ fn clients_have_a_purchase_history() -> TestResult {
             emergency_contact: String::new(),
             notes: String::new(),
             is_active: true,
+            allow_duplicate: false,
         },
         NOW,
     )?;
@@ -375,6 +378,7 @@ fn clientless() -> ClientInput {
         emergency_contact: String::new(),
         notes: String::new(),
         is_active: true,
+        allow_duplicate: false,
     }
 }
 
@@ -461,4 +465,147 @@ fn discounts_arrive_from_the_ui_in_the_documented_json_shape() {
         .filter_map(|json| serde_json::from_str(json).ok())
         .collect();
     assert_eq!(parsed, vec![Discount::None, Discount::Percent(BasisPoints::new(1_000)), Discount::Amount(Paise::new(1_500))]);
+}
+
+// ---- v0.3: consultations, procedures, duplicates, merge, WhatsApp ----------------------------
+
+fn consultation_and_dressing(clinic: &Clinic) -> Result<(i64, i64), ServiceError> {
+    let services = catalog::list(&clinic.db, &clinic.reception, false)?;
+    let id = |name: &str| services.iter().find(|s| s.name == name).map(|s| s.id).ok_or(ServiceError::NotFound("service"));
+    Ok((id("General Consultation")?, id("Dressing")?))
+}
+
+fn service_line(service_id: i64) -> ServiceLineInput {
+    ServiceLineInput { service_id, qty: 1, unit_price_paise: None }
+}
+
+#[test]
+fn consultation_and_procedures_are_billed_without_stock_or_discount() -> TestResult {
+    let mut clinic = clinic()?;
+    let (consultation, dressing) = consultation_and_dressing(&clinic)?;
+    // ₹500 consultation + ₹300 dressing + medicines 2 x ₹20 + 1 x ₹120; ₹10 off the medicines.
+    let mut input = bill("bill-key-0030", vec![line(clinic.paracetamol, 2), line(clinic.cream, 1)], Discount::Amount(Paise::new(1_000)), cash(95_000));
+    input.services = vec![service_line(consultation), service_line(dressing)];
+    let quote = billing::quote(&clinic.db, &clinic.reception, &input.lines, &input.services, input.discount, None, NOW)?;
+    assert_eq!((quote.consultation_paise, quote.procedures_paise, quote.products_paise), (50_000, 30_000, 16_000));
+    assert_eq!(quote.eligible_subtotal_paise, 16_000);
+    assert!(quote.service_lines.iter().all(|l| l.discount_share_paise == 0), "no discount on consultation/procedures");
+    assert_eq!(quote.total_paise, 95_000);
+
+    let done = billing::finalize(&mut clinic.db, &clinic.reception, input, NOW)?;
+    assert_eq!(done.services.len(), 2);
+    assert_eq!(done.bill.total_paise, 95_000);
+    assert_eq!(sellable(&clinic, clinic.paracetamol)?, 98, "only products take stock");
+    let receipt = billing::receipt(&clinic.db, &clinic.reception, done.bill.id)?;
+    let sections: Vec<&str> = receipt.lines.iter().map(|l| l.section.as_str()).collect();
+    assert_eq!(sections, vec!["Consultation", "Procedures", "Medicines & Products", "Medicines & Products"]);
+    assert_eq!(receipt.breakdown.len(), 3);
+    assert_eq!(receipt.discount_label, "Discount on medicines");
+    assert!(receipt.notice.is_some_and(|n| n.contains("signature")));
+
+    // Returning all medicines refunds only what they cost, never the consultation.
+    let items: Vec<ReturnLineInput> = done.items.iter().map(|i| ReturnLineInput { bill_item_id: i.id, qty: i.qty, restock: true }).collect();
+    let returned = billing::return_items(
+        &mut clinic.db,
+        &clinic.reception,
+        ReturnInput { bill_id: done.bill.id, lines: items, reason: "Not needed".into(), refund_method: "CASH".into() },
+        NOW + 60,
+    )?;
+    assert_eq!(returned.refund_paise, 15_000);
+    assert_ledger_consistent(&clinic)
+}
+
+#[test]
+fn a_consultation_alone_is_a_valid_bill_and_a_lower_fee_needs_an_admin() -> TestResult {
+    let mut clinic = clinic()?;
+    let (consultation, _) = consultation_and_dressing(&clinic)?;
+    let mut only = bill("bill-key-0031", Vec::new(), Discount::None, cash(50_000));
+    only.services = vec![service_line(consultation)];
+    assert_eq!(billing::finalize(&mut clinic.db, &clinic.reception, only, NOW)?.bill.total_paise, 50_000);
+
+    let mut cheaper = bill("bill-key-0032", Vec::new(), Discount::None, cash(40_000));
+    cheaper.services = vec![ServiceLineInput { service_id: consultation, qty: 1, unit_price_paise: Some(40_000) }];
+    assert!(matches!(billing::finalize(&mut clinic.db, &clinic.reception, cheaper.clone(), NOW), Err(ServiceError::PriceApprovalRequired)));
+    cheaper.approval = Some(Approval { username: "owner".into(), password: "owner-pass-1".into() });
+    assert_eq!(billing::finalize(&mut clinic.db, &clinic.reception, cheaper, NOW)?.bill.total_paise, 40_000);
+
+    let empty = billing::finalize(&mut clinic.db, &clinic.reception, bill("bill-key-0033", Vec::new(), Discount::None, Vec::new()), NOW);
+    assert!(matches!(empty, Err(ServiceError::Validation { field: "lines", .. })));
+    Ok(())
+}
+
+#[test]
+fn only_admins_edit_the_consultation_and_procedure_list() -> TestResult {
+    let mut clinic = clinic()?;
+    let input = ServiceInput {
+        id: None,
+        kind: "PROCEDURE".into(),
+        name: "Chemical Peel".into(),
+        default_price_paise: 150_000,
+        gst_rate_bp: 0,
+        discount_eligible: false,
+        is_active: true,
+        sort_order: 10,
+    };
+    assert!(matches!(catalog::save(&mut clinic.db, &clinic.reception, input.clone(), NOW), Err(ServiceError::PermissionDenied)));
+    let saved = catalog::save(&mut clinic.db, &clinic.owner, input.clone(), NOW)?;
+    assert_eq!(saved.name, "Chemical Peel");
+    assert!(matches!(catalog::save(&mut clinic.db, &clinic.owner, input, NOW), Err(ServiceError::Conflict(_))), "names are unique per kind");
+    Ok(())
+}
+
+fn client(name: &str, phone: &str) -> ClientInput {
+    ClientInput { full_name: name.into(), phone: phone.into(), ..clientless() }
+}
+
+#[test]
+fn duplicate_clients_are_caught_and_can_be_merged_keeping_every_bill() -> TestResult {
+    let mut clinic = clinic()?;
+    let rahul = clients::save(&mut clinic.db, &clinic.reception, client("Rahul Sharma", "98765 43210"), NOW)?;
+    // Same phone, or the same name written differently: refused until confirmed.
+    let same_phone = clients::save(&mut clinic.db, &clinic.reception, client("Rahul S.", "+91 98765-43210"), NOW);
+    assert!(matches!(same_phone, Err(ServiceError::PossibleDuplicate(_))));
+    let same_name = clients::save(&mut clinic.db, &clinic.reception, client("  rahul  SHARMA ", ""), NOW);
+    assert!(matches!(same_name, Err(ServiceError::PossibleDuplicate(_))));
+    let query = clients::DuplicateQuery { full_name: "Rahul Sarma".into(), phone: String::new(), date_of_birth: None, exclude_id: None };
+    let similar = clients::possible_duplicates(&clinic.db, &clinic.reception, &query)?;
+    assert!(similar.iter().any(|m| m.client.id == rahul.id && m.reason == "SIMILAR_NAME" && !m.strong));
+    assert_eq!(clients::search(&clinic.db, &clinic.reception, "rahul sarma", false)?.first().map(|c| c.id), Some(rahul.id), "typo-tolerant search");
+
+    let second = clients::save(&mut clinic.db, &clinic.reception, ClientInput { allow_duplicate: true, notes: "Prefers mornings".into(), ..client("Rahul S.", "9876543210") }, NOW)?;
+    let mut input = bill("bill-key-0040", vec![line(clinic.paracetamol, 1)], Discount::None, cash(2_000));
+    input.client_id = Some(second.id);
+    let old_bill = billing::finalize(&mut clinic.db, &clinic.reception, input, NOW)?;
+    let groups = clients::duplicate_groups(&clinic.db, &clinic.reception)?;
+    assert!(groups.iter().any(|g| g.reason == "PHONE" && g.clients.len() == 2));
+
+    assert!(matches!(clients::merge(&mut clinic.db, &clinic.reception, rahul.id, second.id, NOW), Err(ServiceError::PermissionDenied)));
+    let merged = clients::merge(&mut clinic.db, &clinic.owner, rahul.id, second.id, NOW + 60)?;
+    assert_eq!(merged.moved_bills, 1);
+    assert!(merged.client.notes.contains("Prefers mornings") && merged.client.notes.contains(&second.client_code));
+    let moved = billing::get(&clinic.db, &clinic.owner, old_bill.bill.id)?;
+    assert_eq!(moved.bill.client_id, Some(rahul.id));
+    assert_eq!((moved.bill.total_paise, moved.items.len()), (old_bill.bill.total_paise, old_bill.items.len()), "the bill itself is unchanged");
+    assert!(clients::search(&clinic.db, &clinic.reception, "Rahul", true)?.iter().all(|c| c.id != second.id), "merged record is hidden");
+    assert_eq!(clients::profile(&clinic.db, &clinic.owner, rahul.id, None, None)?.bill_count, 1);
+    assert!(clients::merge(&mut clinic.db, &clinic.owner, rahul.id, second.id, NOW + 120).is_err(), "cannot merge twice");
+    Ok(())
+}
+
+#[test]
+fn the_whatsapp_message_has_no_medicines_and_needs_a_phone() -> TestResult {
+    let mut clinic = clinic()?;
+    let rahul = clients::save(&mut clinic.db, &clinic.reception, client("Rahul Sharma", "98765 43210"), NOW)?;
+    let mut input = bill("bill-key-0050", vec![line(clinic.paracetamol, 1)], Discount::None, cash(2_000));
+    input.client_id = Some(rahul.id);
+    let done = billing::finalize(&mut clinic.db, &clinic.reception, input, NOW)?;
+    let message = share::whatsapp_message(&clinic.db, &clinic.reception, done.bill.id)?;
+    assert_eq!(message.phone, "919876543210");
+    assert!(message.text.starts_with("Hello Rahul,"));
+    assert!(message.text.contains(&done.bill.bill_no) && message.text.contains("signature"));
+    assert!(!message.text.contains("Paracetamol"), "no medicines in the message");
+
+    let walk_in = billing::finalize(&mut clinic.db, &clinic.reception, bill("bill-key-0051", vec![line(clinic.paracetamol, 1)], Discount::None, cash(2_000)), NOW)?;
+    assert!(matches!(share::whatsapp_message(&clinic.db, &clinic.reception, walk_in.bill.id), Err(ServiceError::NoPhone(_))));
+    Ok(())
 }

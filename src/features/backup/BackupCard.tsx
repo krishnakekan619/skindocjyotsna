@@ -23,7 +23,7 @@ import {
 } from '@mui/material';
 import { api, errorMessage, type BackupFile } from '../../api';
 
-const KIND_LABEL: Record<string, string> = { manual: 'Manual', auto: 'Automatic', 'pre-restore': 'Before restore' };
+const KIND_LABEL: Record<string, string> = { manual: 'Manual', auto: 'Automatic', 'pre-restore': 'Before restore', 'pre-upgrade': 'Before update' };
 const CONFIRM_WORD = 'RESTORE';
 
 function formatSize(bytes: number): string {

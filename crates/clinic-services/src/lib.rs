@@ -8,12 +8,14 @@
 pub mod audit;
 pub mod auth;
 pub mod billing;
+pub mod catalog;
 pub mod clients;
 mod error;
 pub mod inventory;
 pub mod maintenance;
 pub mod reports;
 pub mod settings;
+pub mod share;
 pub mod users;
 
 use clinic_core::auth::{Permission, Role};

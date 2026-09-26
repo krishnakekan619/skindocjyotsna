@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   Alert,
   Autocomplete,
   Box,
   Button,
+  ButtonGroup,
   Card,
   CardContent,
   Chip,
@@ -13,13 +14,9 @@ import {
   DialogContentText,
   DialogTitle,
   IconButton,
+  Menu,
   MenuItem,
   Stack,
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableRow,
   TextField,
   ToggleButton,
   ToggleButtonGroup,
@@ -37,12 +34,15 @@ import {
   type PaymentMethod,
   type Quote,
   type SaleProduct,
+  type ServiceKind,
+  type ServiceLineInput,
+  type ServiceRow,
 } from '../../api';
 import { useApp } from '../../app/AppContext';
 import { ConfirmDialog, ErrorAlert, PageHeader } from '../../components/common';
-import { t } from '../../i18n/en';
-import { formatExpiry, newBillKey } from '../../lib/dates';
-import { paiseToInput, parseRupees, percentLabel, rupees } from '../../lib/money';
+import { MOD_KEY, t } from '../../i18n/en';
+import { formatDateTime, formatExpiry, newBillKey } from '../../lib/dates';
+import { paiseToInput, parseRupees, rupees } from '../../lib/money';
 import { ClientDialog } from '../clients/ClientDialog';
 import { BillDetailDialog } from './BillDetailDialog';
 
@@ -52,12 +52,26 @@ interface Line {
   notSuppliedQty: number;
 }
 
+interface ServiceLine {
+  key: number;
+  service: ServiceRow;
+  qty: number;
+  /** Price as typed, in rupees. */
+  price: string;
+}
+
 type DiscountKind = Discount['kind'];
 interface PaymentDraft {
   method: PaymentMethod;
   amount: string;
   reference: string;
 }
+
+/** A client suggestion, or the "create new client" choice at the end of the list. */
+type ClientOption = ClientRow | { create: string };
+const isCreate = (o: ClientOption): o is { create: string } => 'create' in o;
+
+let serviceKeys = 0;
 
 function discountOf(kind: DiscountKind, text: string): Discount | null {
   if (kind === 'NONE' || text.trim() === '') return { kind: 'NONE' };
@@ -67,7 +81,7 @@ function discountOf(kind: DiscountKind, text: string): Discount | null {
   return kind === 'PERCENT' ? { kind: 'PERCENT', value: paise } : { kind: 'AMOUNT', value: paise };
 }
 
-/** Starting lines for a correction: what the original bill contained (DEC-001). */
+/** Starting product lines for a correction: what the original bill contained (DEC-001). */
 function linesFrom(detail: BillDetail): Line[] {
   const byProduct = new Map<number, Line>();
   for (const item of detail.items) {
@@ -93,20 +107,51 @@ function linesFrom(detail: BillDetail): Line[] {
   return [...byProduct.values()].filter((l) => l.qty + l.notSuppliedQty > 0);
 }
 
-/** POS-style bill: client → product → qty → Enter → … → payment → F9 (design §9.3). */
+/** Starting consultation/procedure lines for a correction. */
+function servicesFrom(detail: BillDetail, catalog: ServiceRow[]): ServiceLine[] {
+  return detail.services.map((s) => ({
+    key: ++serviceKeys,
+    service: catalog.find((c) => c.id === s.serviceId) ?? {
+      id: s.serviceId,
+      kind: s.kind,
+      name: s.name,
+      defaultPricePaise: s.defaultPricePaise,
+      gstRateBp: s.gstRateBp,
+      discountEligible: s.discountEligible,
+      isActive: true,
+      sortOrder: 0,
+    },
+    qty: s.qty,
+    price: paiseToInput(s.unitPricePaise),
+  }));
+}
+
+/**
+ * The receptionist's main screen (v0.3 brief §3-13): client, consultation, procedures and
+ * medicines on ONE screen, then payment and Finalize. All amounts are worked out in Rust.
+ */
 export function NewBillPage({ initialClientId, correcting }: { initialClientId?: number | undefined; correcting?: BillDetail | undefined }) {
   const { notify, navigate } = useApp();
   const [billKey, setBillKey] = useState(newBillKey);
+  // Client
   const [client, setClient] = useState<ClientRow | null>(null);
-  const [clientOptions, setClientOptions] = useState<ClientRow[]>([]);
   const [clientText, setClientText] = useState('');
-  const [addingClient, setAddingClient] = useState(false);
+  const [clientOptions, setClientOptions] = useState<ClientRow[]>([]);
+  const [recentClients, setRecentClients] = useState<ClientRow[]>([]);
+  const [creatingClient, setCreatingClient] = useState<string | null>(null);
+  // Consultations and procedures
+  const [catalog, setCatalog] = useState<ServiceRow[]>([]);
+  const [serviceLines, setServiceLines] = useState<ServiceLine[]>([]);
+  const [menu, setMenu] = useState<{ kind: ServiceKind; anchor: HTMLElement } | null>(null);
+  // Medicines and products
   const [lines, setLines] = useState<Line[]>(() => (correcting ? linesFrom(correcting) : []));
+  const [recentProducts, setRecentProducts] = useState<SaleProduct[]>([]);
   const [productText, setProductText] = useState('');
   const [productOptions, setProductOptions] = useState<SaleProduct[]>([]);
   const [picked, setPicked] = useState<SaleProduct | null>(null);
   const [qtyText, setQtyText] = useState('1');
   const [partial, setPartial] = useState<{ product: SaleProduct; requested: number } | null>(null);
+  // Totals and payment
   const [discountKind, setDiscountKind] = useState<DiscountKind>('NONE');
   const [discountText, setDiscountText] = useState('');
   const [split, setSplit] = useState(false);
@@ -122,9 +167,26 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
   const [needApproval, setNeedApproval] = useState(false);
   const [approvalMessage, setApprovalMessage] = useState('');
   const [confirmClear, setConfirmClear] = useState(false);
-  const [done, setDone] = useState<BillDetail | null>(null);
+  const [done, setDone] = useState<{ detail: BillDetail; print: boolean } | null>(null);
+  const clientInput = useRef<HTMLInputElement | null>(null);
   const productInput = useRef<HTMLInputElement | null>(null);
   const qtyInput = useRef<HTMLInputElement | null>(null);
+
+  // Catalog, recent clients and recent products: loaded once.
+  const loadShortcuts = useCallback(() => {
+    api.searchClients('', false).then((rows) => setRecentClients(rows.slice(0, 8))).catch(() => undefined);
+    api.recentProductsForSale().then(setRecentProducts).catch(() => undefined);
+  }, []);
+  useEffect(() => {
+    loadShortcuts();
+    api
+      .listServices(false)
+      .then((rows) => {
+        setCatalog(rows);
+        if (correcting) setServiceLines(servicesFrom(correcting, rows));
+      })
+      .catch(() => undefined);
+  }, [loadShortcuts, correcting]);
 
   // Preselected client (from the client screen or the bill being corrected).
   useEffect(() => {
@@ -132,9 +194,13 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
     if (id) api.getClientProfile(id, null, null).then((p) => setClient(p.client)).catch(() => undefined);
   }, [initialClientId, correcting]);
 
-  // Client and product search, debounced.
+  // Client and product search: from the 2nd character, debounced, done in the database.
   useEffect(() => {
-    const timer = window.setTimeout(() => api.searchClients(clientText, false).then(setClientOptions).catch(() => undefined), 200);
+    if (clientText.trim().length < 2) {
+      setClientOptions([]);
+      return;
+    }
+    const timer = window.setTimeout(() => api.searchClients(clientText, false).then((rows) => setClientOptions(rows.slice(0, 8))).catch(() => undefined), 200);
     return () => window.clearTimeout(timer);
   }, [clientText]);
   useEffect(() => {
@@ -151,10 +217,20 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
     () => lines.filter((l) => l.qty + l.notSuppliedQty > 0).map((l) => ({ productId: l.product.productId, qty: l.qty, notSuppliedQty: l.notSuppliedQty })),
     [lines],
   );
+  const servicesValid = serviceLines.every((s) => s.qty > 0 && parseRupees(s.price || '0') !== null);
+  const serviceInputs: ServiceLineInput[] = useMemo(
+    () =>
+      serviceLines.map((s) => {
+        const paise = parseRupees(s.price || '0');
+        return { serviceId: s.service.id, qty: s.qty, unitPricePaise: paise === null || paise === s.service.defaultPricePaise ? null : paise };
+      }),
+    [serviceLines],
+  );
+  const itemCount = lineInputs.length + serviceInputs.length;
 
   // All money arithmetic happens in Rust: the screen asks for a quote whenever the bill changes.
   useEffect(() => {
-    if (lineInputs.length === 0 || discount === null) {
+    if (itemCount === 0 || discount === null || !servicesValid) {
       setQuote(null);
       setQuoteError(null);
       return;
@@ -162,27 +238,50 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
     let current = true;
     const timer = window.setTimeout(() => {
       api
-        .quoteBill(lineInputs, discount, correcting?.bill.id ?? null)
-        .then((q) => current && (setQuote(q), setQuoteError(null)))
-        .catch((e: unknown) => current && (setQuote(null), setQuoteError(e)));
+        .quoteBill(lineInputs, serviceInputs, discount, correcting?.bill.id ?? null)
+        .then((q) => {
+          if (current) {
+            setQuote(q);
+            setQuoteError(null);
+          }
+        })
+        .catch((e: unknown) => {
+          if (current) {
+            setQuote(null);
+            setQuoteError(e);
+          }
+        });
     }, 120);
     return () => {
       current = false;
       window.clearTimeout(timer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [lineInputs, discountKind, discountText, correcting]);
+  }, [lineInputs, serviceInputs, discountKind, discountText, correcting, servicesValid]);
 
   const total = quote?.totalPaise ?? 0;
-  const paymentDrafts: PaymentDraft[] = split ? payments : [{ ...(payments[0] ?? { method: 'CASH', reference: '' }), amount: paiseToInput(total) } as PaymentDraft];
+  const paymentDrafts: PaymentDraft[] = split ? payments : [{ method: payments[0]?.method ?? 'CASH', reference: payments[0]?.reference ?? '', amount: paiseToInput(total) }];
   const parsedPayments = paymentDrafts.map((p) => ({ ...p, paise: parseRupees(p.amount || '0') }));
   const paidPaise = parsedPayments.reduce((sum, p) => sum + (p.paise ?? 0), 0);
   const cashPaise = parsedPayments.filter((p) => p.method === 'CASH').reduce((sum, p) => sum + (p.paise ?? 0), 0);
   const received = cashPaise > 0 && receivedText.trim() ? parseRupees(receivedText) : null;
   const changePaise = received !== null ? received - cashPaise : null;
+  const hasProducts = lineInputs.some((l) => l.qty > 0);
 
   const focusProduct = () => window.setTimeout(() => productInput.current?.focus(), 0);
 
+  // ---- Consultations and procedures ----
+  const consultations = catalog.filter((s) => s.kind === 'CONSULTATION');
+  const procedures = catalog.filter((s) => s.kind === 'PROCEDURE');
+  const standardConsultation = consultations[0];
+  const addService = (service: ServiceRow) => {
+    setServiceLines((current) => [...current, { key: ++serviceKeys, service, qty: 1, price: paiseToInput(service.defaultPricePaise) }]);
+    setMenu(null);
+  };
+  const updateService = (key: number, patch: Partial<ServiceLine>) => setServiceLines((current) => current.map((s) => (s.key === key ? { ...s, ...patch } : s)));
+  const removeService = (key: number) => setServiceLines((current) => current.filter((s) => s.key !== key));
+
+  // ---- Medicines and products ----
   const addLine = (product: SaleProduct, qty: number, notSupplied: number) => {
     setLines((current) => {
       const existing = current.find((l) => l.product.productId === product.productId);
@@ -195,22 +294,24 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
     focusProduct();
   };
 
-  const tryAdd = () => {
-    const qty = Number.parseInt(qtyText, 10);
-    if (!picked || !Number.isInteger(qty) || qty <= 0) return;
-    const alreadyInBill = lines.find((l) => l.product.productId === picked.productId)?.qty ?? 0;
-    const available = Math.max(0, picked.availableQty - alreadyInBill);
-    if (correcting || qty <= available) addLine(picked, qty, 0);
-    else setPartial({ product: { ...picked, availableQty: available }, requested: qty }); // DEC-007: ask
+  const tryAdd = (product: SaleProduct | null, qtyValue: string) => {
+    const qty = Number.parseInt(qtyValue, 10);
+    if (!product || !Number.isInteger(qty) || qty <= 0) return;
+    const alreadyInBill = lines.find((l) => l.product.productId === product.productId)?.qty ?? 0;
+    const available = Math.max(0, product.availableQty - alreadyInBill);
+    // When correcting, the original bill's stock comes back first; the quote decides.
+    if (correcting || qty <= available) addLine(product, qty, 0);
+    else setPartial({ product: { ...product, availableQty: available }, requested: qty }); // DEC-007: ask
   };
 
-  const setLineQty = (productId: number, qty: number) =>
-    setLines((current) => current.map((l) => (l.product.productId === productId ? { ...l, qty: Math.max(0, qty) } : l)));
+  const setLineQty = (productId: number, qty: number) => setLines((current) => current.map((l) => (l.product.productId === productId ? { ...l, qty: Math.max(0, qty) } : l)));
 
   const reset = () => {
     setBillKey(newBillKey());
     setLines([]);
+    setServiceLines([]);
     setClient(null);
+    setClientText('');
     setDiscountKind('NONE');
     setDiscountText('');
     setSplit(false);
@@ -221,15 +322,21 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
     setError(null);
   };
 
+  const paymentsOk = total === 0 || paidPaise === total;
+  const canFinalize =
+    !busy && itemCount > 0 && servicesValid && quote !== null && paymentsOk && (!correcting || reason.trim().length >= 3) && (changePaise === null || changePaise >= 0);
+  const dialogOpen = partial !== null || needApproval || confirmClear || creatingClient !== null || done !== null || menu !== null;
+
   const finalize = useCallback(
-    async (withApproval: { username: string; password: string } | null) => {
-      if (busy || lineInputs.length === 0 || !quote || discount === null) return;
+    async (withApproval: { username: string; password: string } | null, print: boolean) => {
+      if (busy || itemCount === 0 || !quote || discount === null) return;
       setBusy(true); // disables Finalize at once: a double-click cannot submit twice (D10)
       setError(null);
       const input: BillInput = {
         idempotencyKey: billKey,
         clientId: client?.id ?? null,
         lines: lineInputs,
+        services: serviceInputs,
         discount,
         payments: total === 0 ? [] : parsedPayments.map((p) => ({ method: p.method, amountPaise: p.paise ?? 0, reference: p.reference })).filter((p) => p.amountPaise > 0),
         amountReceivedPaise: received,
@@ -238,10 +345,10 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
       };
       try {
         const saved = correcting ? await api.correctBill({ originalBillId: correcting.bill.id, reason, bill: input }) : await api.finalizeBill(input);
-        notify(t.billing.saved(saved.bill.billNo));
-        setDone(saved);
+        setDone({ detail: saved, print });
         reset();
         setNeedApproval(false);
+        loadShortcuts();
       } catch (e) {
         if (isCommandError(e) && (e.code === 'DISCOUNT_APPROVAL_REQUIRED' || e.field === 'approval')) {
           setApproval(null);
@@ -253,195 +360,299 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [busy, lines, quote, discount, billKey, client, lineInputs, total, parsedPayments, received, note, correcting, reason],
+    [busy, itemCount, quote, discount, billKey, client, lineInputs, serviceInputs, total, parsedPayments, received, note, correcting, reason],
   );
 
-  const quoteFor = (productId: number) => quote?.lines.filter((q) => q.productId === productId) ?? [];
-  const paymentsOk = total === 0 || paidPaise === total;
-  const canFinalize =
-    !busy && lineInputs.length > 0 && quote !== null && paymentsOk && (!correcting || reason.trim().length >= 3) && (changePaise === null || changePaise >= 0);
-  const dialogOpen = partial !== null || needApproval || confirmClear || addingClient || done !== null;
-
-  // F2: product search, F9: finalize (same checks as the button, and not behind a dialog).
+  // F2: client search, F4: product search, Ctrl/Cmd+Enter (or F9): finalize & print.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'F2') {
         e.preventDefault();
-        productInput.current?.focus();
-      } else if (e.key === 'F9') {
+        clientInput.current?.focus();
+      } else if (e.key === 'F4') {
         e.preventDefault();
-        if (canFinalize && !dialogOpen) void finalize(approval);
+        productInput.current?.focus();
+      } else if ((e.key === 'Enter' && (e.ctrlKey || e.metaKey)) || e.key === 'F9') {
+        e.preventDefault();
+        if (canFinalize && !dialogOpen) void finalize(approval, true);
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [finalize, approval, canFinalize, dialogOpen]);
 
+  const quoteFor = (productId: number) => quote?.lines.filter((q) => q.productId === productId) ?? [];
+  const clientChoices: ClientOption[] = clientText.trim().length >= 2 ? [...clientOptions, { create: clientText.trim() }] : [];
+  const selectClient = (c: ClientRow) => {
+    setClient(c);
+    focusProduct();
+  };
 
   return (
     <>
       <PageHeader
         title={correcting ? t.billing.correctionTitle(correcting.bill.billNo) : t.billing.title}
         subtitle={correcting ? t.billing.correctionIntro : undefined}
-        actions={lines.length > 0 ? <Button color="error" onClick={() => setConfirmClear(true)}>{t.billing.clear}</Button> : undefined}
+        actions={itemCount > 0 ? <Button color="error" onClick={() => setConfirmClear(true)}>{t.billing.clear}</Button> : undefined}
       />
       <Stack spacing={2}>
+        {/* ---- Client ---- */}
         <Card variant="outlined">
           <CardContent>
-            <Stack direction="row" spacing={2} sx={{ alignItems: 'center' }}>
-              <Autocomplete
-                sx={{ flexGrow: 1, maxWidth: 520 }}
-                options={clientOptions}
-                value={client}
-                onChange={(_, value) => setClient(value)}
-                inputValue={clientText}
-                onInputChange={(_, value) => setClientText(value)}
-                getOptionLabel={(c) => `${c.fullName} · ${c.clientCode}${c.phone ? ` · ${c.phone}` : ''}`}
-                isOptionEqualToValue={(a, b) => a.id === b.id}
-                filterOptions={(x) => x}
-                renderInput={(params) => <TextField {...params} label={t.billing.client} placeholder={t.billing.clientSearch} />}
-              />
-              {!client && <Chip label={t.billing.walkIn} variant="outlined" />}
-              <Button onClick={() => setAddingClient(true)}>{t.billing.newClient}</Button>
-            </Stack>
+            <Typography variant="overline" sx={{ fontWeight: 700, letterSpacing: 1 }} color="text.secondary">
+              {t.billing.client}
+            </Typography>
+            {client ? (
+              <Stack direction="row" spacing={2} sx={{ alignItems: 'center', flexWrap: 'wrap' }} useFlexGap>
+                <Typography variant="h6" sx={{ fontWeight: 700 }}>
+                  {client.fullName}
+                </Typography>
+                <Typography color="text.secondary">
+                  {[client.clientCode, client.phone && `📞 ${client.phone}`, client.lastVisitAt && t.billing.lastVisit(formatDateTime(client.lastVisitAt))].filter(Boolean).join(' · ')}
+                </Typography>
+                <Box sx={{ flexGrow: 1 }} />
+                <Button
+                  onClick={() => {
+                    setClient(null);
+                    setClientText('');
+                    window.setTimeout(() => clientInput.current?.focus(), 0);
+                  }}
+                >
+                  {t.billing.changeClient}
+                </Button>
+              </Stack>
+            ) : (
+              <Stack spacing={1.5}>
+                <Autocomplete<ClientOption>
+                  options={clientChoices}
+                  value={null}
+                  onChange={(_, option) => {
+                    if (!option) return;
+                    if (isCreate(option)) setCreatingClient(option.create);
+                    else selectClient(option);
+                  }}
+                  inputValue={clientText}
+                  onInputChange={(_, value, why) => {
+                    if (why !== 'reset') setClientText(value);
+                  }}
+                  getOptionLabel={(o) => (isCreate(o) ? t.billing.createClient(o.create) : o.fullName)}
+                  isOptionEqualToValue={(a, b) => !isCreate(a) && !isCreate(b) && a.id === b.id}
+                  filterOptions={(x) => x}
+                  noOptionsText={t.billing.noClientMatch}
+                  renderOption={({ key, ...props }, o) =>
+                    isCreate(o) ? (
+                      <li key={key} {...props}>
+                        <Typography color="primary" sx={{ fontWeight: 600 }}>
+                          {clientOptions.length === 0 && `${t.billing.noClientMatch} `}
+                          {t.billing.createClient(o.create)}
+                        </Typography>
+                      </li>
+                    ) : (
+                      <li key={key} {...props}>
+                        <Box>
+                          <Typography sx={{ fontWeight: 600 }}>{o.fullName}</Typography>
+                          <Typography variant="body2" color="text.secondary">
+                            {[o.clientCode, o.phone, o.lastVisitAt && t.billing.lastVisit(formatDateTime(o.lastVisitAt))].filter(Boolean).join(' · ')}
+                          </Typography>
+                        </Box>
+                      </li>
+                    )
+                  }
+                  renderInput={(params) => <TextField {...params} placeholder={t.billing.clientPlaceholder} inputRef={clientInput} autoFocus={!correcting} />}
+                />
+                {recentClients.length > 0 && (
+                  <Stack direction="row" spacing={1} sx={{ alignItems: 'center', flexWrap: 'wrap' }} useFlexGap>
+                    <Typography variant="body2" color="text.secondary">
+                      {t.billing.recent}
+                    </Typography>
+                    {recentClients.map((c) => (
+                      <Chip key={c.id} label={c.fullName} variant="outlined" onClick={() => selectClient(c)} />
+                    ))}
+                    <Chip label={t.billing.walkIn} variant="outlined" sx={{ borderStyle: 'dashed' }} onClick={focusProduct} />
+                  </Stack>
+                )}
+              </Stack>
+            )}
           </CardContent>
         </Card>
 
+        {/* ---- Consultation, procedures, medicines ---- */}
         <Card variant="outlined">
           <CardContent>
-            <Stack direction="row" spacing={2} sx={{ mb: 2, alignItems: 'center' }}>
-              <Autocomplete
-                sx={{ flexGrow: 1 }}
-                options={productOptions}
-                value={picked}
-                onChange={(_, value) => {
-                  setPicked(value);
-                  if (value) window.setTimeout(() => qtyInput.current?.select(), 0);
-                }}
-                inputValue={productText}
-                onInputChange={(_, value, why) => why !== 'reset' && setProductText(value)}
-                getOptionLabel={(p) => p.name}
-                isOptionEqualToValue={(a, b) => a.productId === b.productId}
-                filterOptions={(x) => x}
-                noOptionsText={productText ? t.products.empty : t.billing.noLines}
-                renderOption={({ key, ...props }, p) => (
-                  <li key={key} {...props}>
-                    <Box sx={{ width: '100%' }}>
-                      <Typography sx={{ fontWeight: 600 }}>
-                        {p.name} <Typography component="span" color="text.secondary">{p.genericName} · {p.unit}</Typography>
-                      </Typography>
-                      <Typography variant="body2" color={p.availableQty > 0 ? 'text.secondary' : 'error'}>
-                        {rupees(p.pricePaise)} · {p.availableQty > 0 ? t.billing.available(p.availableQty, p.unit) : t.products.filterOut}
-                        {p.nextExpiry ? ` · ${t.products.expiry} ${formatExpiry(p.nextExpiry)}` : ''}
-                        {p.expiresSoon ? ` · ⚠ ${t.billing.expiresSoon}` : ''}
-                      </Typography>
-                    </Box>
-                  </li>
-                )}
-                renderInput={(params) => <TextField {...params} label={t.billing.product} inputRef={productInput} autoFocus />}
-              />
-              <TextField
-                label={t.common.qty}
-                value={qtyText}
-                onChange={(e) => setQtyText(e.target.value.replace(/\D/g, '').slice(0, 5))}
-                onKeyDown={(e) => e.key === 'Enter' && tryAdd()}
-                inputRef={qtyInput}
-                sx={{ width: 90 }}
-                slotProps={{ htmlInput: { inputMode: 'numeric' } }}
-              />
-              <Button variant="contained" onClick={tryAdd} disabled={!picked}>
-                {t.billing.add}
-              </Button>
-            </Stack>
-
-            {lines.length === 0 ? (
-              <Typography color="text.secondary">{t.billing.noLines}</Typography>
-            ) : (
-              <Table size="small">
-                <TableHead>
-                  <TableRow>
-                    <TableCell>{t.products.name}</TableCell>
-                    <TableCell>{t.products.batchNo}</TableCell>
-                    <TableCell align="right">{t.common.qty}</TableCell>
-                    <TableCell align="right">{t.common.price}</TableCell>
-                    <TableCell align="right">{t.products.gst}</TableCell>
-                    <TableCell align="right">{t.common.amount}</TableCell>
-                    <TableCell />
-                  </TableRow>
-                </TableHead>
-                <TableBody>
+            <Section
+              title={t.billing.consultation}
+              actions={
+                <ButtonGroup variant="outlined">
+                  {standardConsultation && <Button onClick={() => addService(standardConsultation)}>{t.billing.addConsultation(rupees(standardConsultation.defaultPricePaise))}</Button>}
+                  {consultations.length > 1 && (
+                    <Button aria-label={t.billing.moreConsultations} onClick={(e) => setMenu({ kind: 'CONSULTATION', anchor: e.currentTarget })}>
+                      ▾
+                    </Button>
+                  )}
+                </ButtonGroup>
+              }
+            >
+              <ServiceRows lines={serviceLines.filter((s) => s.service.kind === 'CONSULTATION')} onChange={updateService} onRemove={removeService} showQty={false} />
+            </Section>
+            <Section
+              title={t.billing.procedures}
+              actions={
+                <Button variant="outlined" disabled={procedures.length === 0} onClick={(e) => setMenu({ kind: 'PROCEDURE', anchor: e.currentTarget })}>
+                  {t.billing.addProcedure}
+                </Button>
+              }
+            >
+              <ServiceRows lines={serviceLines.filter((s) => s.service.kind === 'PROCEDURE')} onChange={updateService} onRemove={removeService} showQty />
+            </Section>
+            <Section title={t.billing.products}>
+              <Stack direction="row" spacing={2} sx={{ alignItems: 'center', mb: 1 }}>
+                <Autocomplete
+                  sx={{ flexGrow: 1 }}
+                  options={productOptions}
+                  value={picked}
+                  onChange={(_, value) => {
+                    setPicked(value);
+                    if (value) window.setTimeout(() => qtyInput.current?.select(), 0);
+                  }}
+                  inputValue={productText}
+                  onInputChange={(_, value, why) => {
+                    if (why !== 'reset') setProductText(value);
+                  }}
+                  getOptionLabel={(p) => p.name}
+                  isOptionEqualToValue={(a, b) => a.productId === b.productId}
+                  filterOptions={(x) => x}
+                  noOptionsText={productText ? t.products.empty : t.billing.productSearch}
+                  renderOption={({ key, ...props }, p) => (
+                    <li key={key} {...props}>
+                      <Box sx={{ width: '100%' }}>
+                        <Typography sx={{ fontWeight: 600 }}>
+                          {p.name}{' '}
+                          <Typography component="span" color="text.secondary">
+                            {p.genericName}
+                          </Typography>
+                        </Typography>
+                        <Typography variant="body2" color={p.availableQty > 0 ? 'text.secondary' : 'error'}>
+                          {p.availableQty > 0 ? t.billing.stock(p.availableQty, p.unit) : t.products.filterOut} · {rupees(p.pricePaise)}
+                          {p.nextExpiry ? ` · ${t.products.expiry} ${formatExpiry(p.nextExpiry)}` : ''}
+                          {p.expiresSoon ? ` · ⚠ ${t.billing.expiresSoon}` : ''}
+                        </Typography>
+                      </Box>
+                    </li>
+                  )}
+                  renderInput={(params) => <TextField {...params} placeholder={t.billing.productSearch} inputRef={productInput} />}
+                />
+                <TextField
+                  label={t.common.qty}
+                  value={qtyText}
+                  onChange={(e) => setQtyText(e.target.value.replace(/\D/g, '').slice(0, 5))}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.ctrlKey && !e.metaKey) tryAdd(picked, qtyText);
+                  }}
+                  inputRef={qtyInput}
+                  sx={{ width: 90 }}
+                  slotProps={{ htmlInput: { inputMode: 'numeric' } }}
+                />
+                <Button variant="contained" onClick={() => tryAdd(picked, qtyText)} disabled={!picked}>
+                  {t.billing.add}
+                </Button>
+              </Stack>
+              {!productText && recentProducts.length > 0 && (
+                <Stack direction="row" spacing={1} sx={{ alignItems: 'center', flexWrap: 'wrap', mb: 1 }} useFlexGap>
+                  <Typography variant="body2" color="text.secondary">
+                    {t.billing.recent}
+                  </Typography>
+                  {recentProducts.map((p) => (
+                    <Chip key={p.productId} label={p.name} variant="outlined" disabled={p.availableQty === 0} onClick={() => tryAdd(p, '1')} />
+                  ))}
+                </Stack>
+              )}
+              {lines.length === 0 ? (
+                <Typography color="text.secondary">{t.billing.noServices}</Typography>
+              ) : (
+                <Stack divider={<Box sx={{ borderTop: 1, borderColor: 'divider' }} />}>
                   {lines.map((line) => {
                     const quoted = quoteFor(line.product.productId).filter((q) => q.qty > 0);
                     const net = quoted.reduce((s, q) => s + q.netPaise, 0);
                     return (
-                      <TableRow key={line.product.productId}>
-                        <TableCell>
-                          {line.product.name}
+                      <Stack key={line.product.productId} direction="row" spacing={2} sx={{ alignItems: 'center', py: 1 }}>
+                        <Box sx={{ flexGrow: 1 }}>
+                          <Typography sx={{ fontWeight: 600 }}>{line.product.name}</Typography>
+                          <Typography variant="body2" color="text.secondary">
+                            {quoted.length ? `${quoted.map((q) => rupees(q.unitPricePaise)).join(' / ')} · ${quoted.flatMap((q) => q.batchNos).join(', ')}` : '—'}
+                            {quoted.some((q) => q.expiresSoon) && ` · ⚠ ${t.billing.expiresSoon}`}
+                          </Typography>
                           {line.notSuppliedQty > 0 && (
                             <Typography variant="body2" color="error">
                               {t.billing.notSupplied}: {line.notSuppliedQty}
                             </Typography>
                           )}
-                          {quoted.some((q) => q.expiresSoon) && <Chip size="small" color="warning" label={t.billing.expiresSoon} sx={{ ml: 1 }} />}
-                        </TableCell>
-                        <TableCell>{quoted.flatMap((q) => q.batchNos).join(', ') || '—'}</TableCell>
-                        <TableCell align="right">
-                          <TextField
-                            size="small"
-                            value={line.qty}
-                            onChange={(e) => setLineQty(line.product.productId, Number.parseInt(e.target.value.replace(/\D/g, '') || '0', 10))}
-                            sx={{ width: 80 }}
-                            slotProps={{ htmlInput: { inputMode: 'numeric', style: { textAlign: 'right' } } }}
-                          />
-                        </TableCell>
-                        <TableCell align="right">{quoted.length ? quoted.map((q) => rupees(q.unitPricePaise)).join(' / ') : '—'}</TableCell>
-                        <TableCell align="right">{percentLabel(line.product.gstRateBp)}</TableCell>
-                        <TableCell align="right">{rupees(net)}</TableCell>
-                        <TableCell align="right">
-                          <IconButton aria-label="remove" onClick={() => setLines((c) => c.filter((l) => l !== line))}>
-                            ✕
-                          </IconButton>
-                        </TableCell>
-                      </TableRow>
+                        </Box>
+                        <TextField
+                          size="small"
+                          label={t.common.qty}
+                          value={line.qty}
+                          onChange={(e) => setLineQty(line.product.productId, Number.parseInt(e.target.value.replace(/\D/g, '') || '0', 10))}
+                          sx={{ width: 80 }}
+                          slotProps={{ htmlInput: { inputMode: 'numeric', style: { textAlign: 'right' } } }}
+                        />
+                        <Typography sx={{ minWidth: 100, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{rupees(net)}</Typography>
+                        <IconButton aria-label="remove" onClick={() => setLines((c) => c.filter((l) => l !== line))}>
+                          ✕
+                        </IconButton>
+                      </Stack>
                     );
                   })}
-                </TableBody>
-              </Table>
-            )}
+                </Stack>
+              )}
+            </Section>
             <ErrorAlert error={quoteError} />
           </CardContent>
         </Card>
 
-        <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '1fr 380px' }, gap: 2 }}>
+        {/* ---- Discount, payment and totals ---- */}
+        <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '1fr 400px' }, gap: 2 }}>
           <Card variant="outlined">
             <CardContent>
               <Stack spacing={2}>
-                <Stack direction="row" spacing={2} sx={{ alignItems: 'center' }}>
-                  <Typography sx={{ minWidth: 110 }}>{t.billing.discount}</Typography>
-                  <ToggleButtonGroup size="small" exclusive value={discountKind} onChange={(_, v: DiscountKind | null) => v && setDiscountKind(v)}>
+                <Stack direction="row" spacing={2} sx={{ alignItems: 'center', flexWrap: 'wrap' }} useFlexGap>
+                  <Typography sx={{ minWidth: 170 }}>{t.billing.discountOnMedicines}</Typography>
+                  <ToggleButtonGroup size="small" exclusive value={discountKind} disabled={!hasProducts} onChange={(_, v: DiscountKind | null) => v && setDiscountKind(v)}>
                     <ToggleButton value="NONE">{t.billing.discountNone}</ToggleButton>
                     <ToggleButton value="PERCENT">{t.billing.discountPercent}</ToggleButton>
                     <ToggleButton value="AMOUNT">{t.billing.discountAmount}</ToggleButton>
                   </ToggleButtonGroup>
-                  {discountKind !== 'NONE' && <TextField size="small" value={discountText} onChange={(e) => setDiscountText(e.target.value)} error={discount === null} sx={{ width: 120 }} />}
+                  {discountKind !== 'NONE' && hasProducts && <TextField size="small" value={discountText} onChange={(e) => setDiscountText(e.target.value)} error={discount === null} sx={{ width: 120 }} />}
+                  {!hasProducts && (
+                    <Typography variant="body2" color="text.secondary">
+                      {t.billing.discountNeedsMedicines}
+                    </Typography>
+                  )}
                 </Stack>
-                <Stack direction="row" spacing={2} sx={{ alignItems: 'center' }}>
-                  <Typography sx={{ minWidth: 110 }}>{t.billing.payment}</Typography>
+                <Stack direction="row" spacing={2} sx={{ alignItems: 'center', flexWrap: 'wrap' }} useFlexGap>
+                  <Typography sx={{ minWidth: 170 }}>{t.billing.payment}</Typography>
                   {!split && (
                     <ToggleButtonGroup
-                      size="small"
                       exclusive
                       value={payments[0]?.method ?? 'CASH'}
                       onChange={(_, v: PaymentMethod | null) => v && setPayments([{ method: v, amount: '', reference: payments[0]?.reference ?? '' }])}
                     >
                       {PAYMENT_METHODS.map((m) => (
-                        <ToggleButton key={m} value={m}>
+                        <ToggleButton key={m} value={m} sx={{ px: 2.5 }}>
                           {t.billing.methods[m]}
                         </ToggleButton>
                       ))}
                     </ToggleButtonGroup>
                   )}
-                  <Button size="small" onClick={() => { setSplit(!split); setPayments([{ method: 'CASH', amount: '', reference: '' }, { method: 'UPI', amount: '', reference: '' }]); }}>
+                  <Button
+                    size="small"
+                    onClick={() => {
+                      setSplit(!split);
+                      setPayments([
+                        { method: 'CASH', amount: '', reference: '' },
+                        { method: 'UPI', amount: '', reference: '' },
+                      ]);
+                    }}
+                  >
                     {split ? t.common.cancel : t.billing.split}
                   </Button>
                 </Stack>
@@ -459,7 +670,7 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
                       <TextField size="small" label={t.billing.reference} value={p.reference} onChange={(e) => setPayments(payments.map((x, i) => (i === index ? { ...x, reference: e.target.value } : x)))} />
                     </Stack>
                   ))}
-                {(split ? payments.some((p) => p.method === 'CASH') : payments[0]?.method === 'CASH') && total > 0 && (
+                {cashPaise > 0 && (
                   <Stack direction="row" spacing={2} sx={{ alignItems: 'center' }}>
                     <TextField size="small" label={t.billing.received} value={receivedText} onChange={(e) => setReceivedText(e.target.value)} sx={{ width: 170 }} />
                     {changePaise !== null && (
@@ -478,21 +689,39 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
           <Card variant="outlined">
             <CardContent>
               <Stack spacing={1}>
-                <Row label={t.billing.subtotal} value={rupees(quote?.subtotalPaise ?? 0)} />
-                {(quote?.discountPaise ?? 0) > 0 && <Row label={t.billing.discount} value={`-${rupees(quote?.discountPaise ?? 0)}`} />}
-                {(quote?.taxPaise ?? 0) > 0 && <Row label={t.billing.gstIncluded} value={rupees(quote?.taxPaise ?? 0)} />}
+                {(quote?.consultationPaise ?? 0) > 0 && <Row label={t.billing.consultation} value={rupees(quote?.consultationPaise ?? 0)} />}
+                {(quote?.proceduresPaise ?? 0) > 0 && <Row label={t.billing.procedures} value={rupees(quote?.proceduresPaise ?? 0)} />}
+                {(quote?.productsPaise ?? 0) > 0 && <Row label={t.billing.medicinesSubtotal} value={rupees(quote?.productsPaise ?? 0)} />}
+                {(quote?.discountPaise ?? 0) > 0 && <Row label={t.billing.discountOnMedicines} value={`-${rupees(quote?.discountPaise ?? 0)}`} />}
+                {(quote?.taxPaise ?? 0) > 0 && <Row label={t.billing.gstIncluded} value={rupees(quote?.taxPaise ?? 0)} muted />}
                 {(quote?.roundOffPaise ?? 0) !== 0 && <Row label={t.billing.roundOff} value={rupees(quote?.roundOffPaise ?? 0)} />}
                 <Row label={t.billing.total} value={rupees(total)} strong />
-                {split && !paymentsOk && <Alert severity="warning">{t.billing.paymentsMismatch} ({rupees(paidPaise)} / {rupees(total)})</Alert>}
+                {split && !paymentsOk && (
+                  <Alert severity="warning">
+                    {t.billing.paymentsMismatch} ({rupees(paidPaise)} / {rupees(total)})
+                  </Alert>
+                )}
                 <ErrorAlert error={error} />
-                <Button variant="contained" size="large" disabled={!canFinalize} onClick={() => void finalize(approval)}>
-                  {busy ? t.billing.finalizing : t.billing.finalize}
+                <Button variant="contained" size="large" sx={{ py: 1.5, fontSize: '1.05rem' }} disabled={!canFinalize} onClick={() => void finalize(approval, true)}>
+                  {busy ? t.billing.finalizing : t.billing.finalizePrint(MOD_KEY)}
+                </Button>
+                <Button variant="outlined" disabled={!canFinalize} onClick={() => void finalize(approval, false)}>
+                  {t.billing.finalizeOnly}
                 </Button>
               </Stack>
             </CardContent>
           </Card>
         </Box>
       </Stack>
+
+      <Menu open={menu !== null} anchorEl={menu?.anchor ?? null} onClose={() => setMenu(null)}>
+        {(menu?.kind === 'PROCEDURE' ? procedures : consultations).map((s) => (
+          <MenuItem key={s.id} onClick={() => addService(s)} sx={{ minWidth: 260, justifyContent: 'space-between', gap: 3 }}>
+            <span>{s.name}</span>
+            <Typography color="text.secondary">{rupees(s.defaultPricePaise)}</Typography>
+          </MenuItem>
+        ))}
+      </Menu>
 
       {partial && (
         <Dialog open onClose={() => setPartial(null)}>
@@ -501,13 +730,32 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
             <DialogContentText>{t.billing.partialText(partial.product.availableQty, partial.requested, partial.product.unit)}</DialogContentText>
           </DialogContent>
           <DialogActions>
-            <Button onClick={() => { setPartial(null); qtyInput.current?.select(); }}>{t.billing.changeQty}</Button>
+            <Button
+              onClick={() => {
+                setPartial(null);
+                qtyInput.current?.select();
+              }}
+            >
+              {t.billing.changeQty}
+            </Button>
             {partial.product.availableQty > 0 ? (
-              <Button variant="contained" onClick={() => { addLine(partial.product, partial.product.availableQty, partial.requested - partial.product.availableQty); setPartial(null); }}>
+              <Button
+                variant="contained"
+                onClick={() => {
+                  addLine(partial.product, partial.product.availableQty, partial.requested - partial.product.availableQty);
+                  setPartial(null);
+                }}
+              >
                 {t.billing.supplyAvailable(partial.product.availableQty)}
               </Button>
             ) : (
-              <Button variant="contained" onClick={() => { addLine(partial.product, 0, partial.requested); setPartial(null); }}>
+              <Button
+                variant="contained"
+                onClick={() => {
+                  addLine(partial.product, 0, partial.requested);
+                  setPartial(null);
+                }}
+              >
                 {t.billing.recordNotSupplied}
               </Button>
             )}
@@ -522,29 +770,34 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
           onApprove={(credentials) => {
             setApproval(credentials);
             setNeedApproval(false);
-            void finalize(credentials);
+            void finalize(credentials, true);
           }}
         />
       )}
       <ConfirmDialog open={confirmClear} title={t.billing.clear} text={t.billing.clearConfirm} confirmLabel={t.billing.clear} danger onConfirm={() => reset()} onClose={() => setConfirmClear(false)} />
-      {addingClient && (
+      {creatingClient !== null && (
         <ClientDialog
           client={null}
-          initialName={clientText}
-          onClose={() => setAddingClient(false)}
+          initialName={creatingClient}
+          onClose={() => setCreatingClient(null)}
           onSaved={(c) => {
-            setClient(c);
-            setAddingClient(false);
+            // New or existing: either way it is now this bill's client, no extra steps (brief §5).
+            setCreatingClient(null);
+            setClientText('');
+            notify(t.clients.created(c.fullName));
+            selectClient(c);
           }}
         />
       )}
       {done && (
         <BillDetailDialog
-          billId={done.bill.id}
+          billId={done.detail.bill.id}
+          savedMessage={t.billing.createdTitle(done.detail.bill.billNo)}
+          autoPrint={done.print}
           onClose={() => {
             setDone(null);
             if (correcting) navigate({ name: 'bills' });
-            else focusProduct();
+            else window.setTimeout(() => clientInput.current?.focus(), 0);
           }}
           onChanged={() => undefined}
         />
@@ -553,11 +806,75 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
   );
 }
 
-function Row({ label, value, strong }: { label: string; value: string; strong?: boolean }) {
+function Section({ title, actions, children }: { title: string; actions?: ReactNode; children: ReactNode }) {
   return (
-    <Stack direction="row" sx={{ justifyContent: 'space-between' }}>
-      <Typography sx={{ fontWeight: strong ? 700 : 400, fontSize: strong ? '1.25rem' : undefined }}>{label}</Typography>
-      <Typography sx={{ fontWeight: strong ? 700 : 400, fontSize: strong ? '1.25rem' : undefined, fontVariantNumeric: 'tabular-nums' }}>{value}</Typography>
+    <Box sx={{ '& + &': { mt: 2.5, pt: 2.5, borderTop: 1, borderColor: 'divider' } }}>
+      <Stack direction="row" sx={{ alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
+        <Typography variant="overline" sx={{ fontWeight: 700, letterSpacing: 1 }} color="text.secondary">
+          {title}
+        </Typography>
+        {actions}
+      </Stack>
+      {children}
+    </Box>
+  );
+}
+
+function ServiceRows({
+  lines,
+  onChange,
+  onRemove,
+  showQty,
+}: {
+  lines: ServiceLine[];
+  onChange: (key: number, patch: Partial<ServiceLine>) => void;
+  onRemove: (key: number) => void;
+  showQty: boolean;
+}) {
+  if (lines.length === 0) return <Typography color="text.secondary">{t.billing.noServices}</Typography>;
+  return (
+    <Stack spacing={1}>
+      {lines.map((line) => {
+        const paise = parseRupees(line.price || '0');
+        const below = paise !== null && paise < line.service.defaultPricePaise;
+        return (
+          <Stack key={line.key} direction="row" spacing={2} sx={{ alignItems: 'center' }}>
+            <Box sx={{ flexGrow: 1 }}>
+              <Typography sx={{ fontWeight: 600 }}>{line.service.name}</Typography>
+              {below && (
+                <Typography variant="body2" color="warning.main">
+                  {t.billing.belowDefault(rupees(line.service.defaultPricePaise))}
+                </Typography>
+              )}
+            </Box>
+            {showQty && (
+              <TextField
+                size="small"
+                label={t.common.qty}
+                value={line.qty}
+                onChange={(e) => onChange(line.key, { qty: Math.min(100, Number.parseInt(e.target.value.replace(/\D/g, '') || '0', 10)) })}
+                sx={{ width: 80 }}
+                slotProps={{ htmlInput: { inputMode: 'numeric', style: { textAlign: 'right' } } }}
+              />
+            )}
+            <TextField size="small" label="₹" value={line.price} error={paise === null} onChange={(e) => onChange(line.key, { price: e.target.value })} sx={{ width: 110 }} />
+            <Typography sx={{ minWidth: 100, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{paise === null ? '—' : rupees(paise * line.qty)}</Typography>
+            <IconButton aria-label="remove" onClick={() => onRemove(line.key)}>
+              ✕
+            </IconButton>
+          </Stack>
+        );
+      })}
+    </Stack>
+  );
+}
+
+function Row({ label, value, strong = false, muted = false }: { label: string; value: string; strong?: boolean; muted?: boolean }) {
+  const sx = { fontWeight: strong ? 700 : 400, fontSize: strong ? '1.35rem' : '1rem', color: muted ? 'text.secondary' : 'text.primary' };
+  return (
+    <Stack direction="row" sx={{ justifyContent: 'space-between', ...(strong ? { borderTop: 1, borderColor: 'divider', pt: 1, mt: 0.5 } : {}) }}>
+      <Typography sx={sx}>{label}</Typography>
+      <Typography sx={{ ...sx, fontVariantNumeric: 'tabular-nums' }}>{value}</Typography>
     </Stack>
   );
 }

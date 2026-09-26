@@ -39,13 +39,22 @@ export interface ClinicApi {
   listStockLedger(productId: number | null, limit: number): Promise<T.LedgerRow[]>;
   listExpiring(withinDays: number): Promise<T.ExpiringBatch[]>;
   searchProductsForSale(text: string): Promise<T.SaleProduct[]>;
+  recentProductsForSale(): Promise<T.SaleProduct[]>;
   // Clients
   searchClients(text: string, includeInactive: boolean): Promise<T.ClientRow[]>;
   saveClient(input: T.ClientInput): Promise<T.ClientRow>;
   getClientProfile(clientId: number, fromDate: string | null, toDate: string | null): Promise<T.ClientProfile>;
+  /** Possible existing clients for the details typed in a "new client" form. */
+  checkClientDuplicates(query: T.DuplicateQuery): Promise<T.DuplicateMatch[]>;
+  findDuplicateClients(): Promise<T.DuplicateGroup[]>;
+  /** Administrators: bills of `secondaryId` move to `primaryId`; nothing is deleted. */
+  mergeClients(primaryId: number, secondaryId: number): Promise<T.MergeResult>;
+  // Consultations & procedures
+  listServices(includeInactive: boolean): Promise<T.ServiceRow[]>;
+  saveService(input: T.ServiceInput): Promise<T.ServiceRow>;
   // Billing
   /** `correctingBillId`: the bill being corrected (its stock counts as available again). */
-  quoteBill(lines: T.BillLineInput[], discount: T.Discount, correctingBillId: number | null): Promise<T.Quote>;
+  quoteBill(lines: T.BillLineInput[], services: T.ServiceLineInput[], discount: T.Discount, correctingBillId: number | null): Promise<T.Quote>;
   finalizeBill(input: T.BillInput): Promise<T.BillDetail>;
   listBills(filter: T.BillFilter): Promise<T.BillRow[]>;
   getBill(billId: number): Promise<T.BillDetail>;
@@ -56,6 +65,8 @@ export interface ClinicApi {
   /** Returns the saved file name (in the exports folder). */
   exportReceiptPdf(billId: number): Promise<string>;
   openExport(fileName: string): Promise<void>;
+  /** Saves the PDF, copies it to the clipboard and opens WhatsApp on the client's chat. */
+  openWhatsApp(billId: number): Promise<T.WhatsAppHandoff>;
   // Reports
   getDashboard(): Promise<T.Dashboard>;
   salesReport(range: T.DateRange): Promise<T.SalesReport>;

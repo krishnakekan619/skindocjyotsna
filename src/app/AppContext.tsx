@@ -14,6 +14,7 @@ export type Page =
   | { name: 'catalog' }
   | { name: 'reports' }
   | { name: 'clinic' }
+  | { name: 'services' }
   | { name: 'users' }
   | { name: 'security' }
   | { name: 'audit' }

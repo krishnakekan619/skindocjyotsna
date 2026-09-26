@@ -24,6 +24,8 @@ pub enum BackupKind {
     Manual,
     Automatic,
     PreRestore,
+    /// Taken automatically before a new app version upgrades the database schema.
+    PreUpgrade,
 }
 
 impl BackupKind {
@@ -32,6 +34,7 @@ impl BackupKind {
             BackupKind::Manual => "manual",
             BackupKind::Automatic => "auto",
             BackupKind::PreRestore => "pre-restore",
+            BackupKind::PreUpgrade => "pre-upgrade",
         }
     }
 
@@ -40,6 +43,7 @@ impl BackupKind {
             "manual" => Some(BackupKind::Manual),
             "auto" => Some(BackupKind::Automatic),
             "pre-restore" => Some(BackupKind::PreRestore),
+            "pre-upgrade" => Some(BackupKind::PreUpgrade),
             _ => None,
         }
     }

@@ -17,6 +17,13 @@ pub struct ReceiptData {
     pub client_label: Option<String>,
     pub lines: Vec<ReceiptLine>,
     pub subtotal: Paise,
+    /// Section subtotals shown instead of "Subtotal" (Consultation, Procedures, Medicines...);
+    /// empty for a bill with medicines/products only.
+    #[serde(default)]
+    pub breakdown: Vec<ReceiptTotal>,
+    /// e.g. "Discount on medicines" when the discount did not apply to consultation/procedures.
+    #[serde(default = "default_discount_label")]
+    pub discount_label: String,
     pub discount: Paise,
     pub tax_label: String,
     pub tax: Paise,
@@ -27,7 +34,24 @@ pub struct ReceiptData {
     pub change_due: Option<Paise>,
     pub billed_by: Option<String>,
     pub footer: Option<String>,
+    /// Small print at the very bottom, e.g. that an e-receipt needs no signature or stamp.
+    #[serde(default)]
+    pub notice: Option<String>,
 }
+
+fn default_discount_label() -> String {
+    "Discount".to_string()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReceiptTotal {
+    pub label: String,
+    pub amount: Paise,
+}
+
+/// Printed on every receipt (the PDF is sent electronically, e.g. on WhatsApp).
+pub const E_RECEIPT_NOTICE: &str = "This is a computer-generated e-receipt and does not require a signature or stamp.";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -40,6 +64,10 @@ pub struct ReceiptLine {
     pub amount: Paise,
     /// Prescribed but not given because it was out of stock (qty and amount are then 0).
     pub not_supplied_qty: u32,
+    /// Heading this line belongs under ("Consultation", "Procedures", "Medicines & Products");
+    /// empty = no headings (a bill with medicines/products only).
+    #[serde(default)]
+    pub section: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -71,6 +99,7 @@ pub fn sample_receipt() -> ReceiptData {
                 unit_price: Paise::new(2_000),
                 amount: Paise::new(4_000),
                 not_supplied_qty: 0,
+                section: String::new(),
             },
             ReceiptLine {
                 name: "Pain Relief Cream".into(),
@@ -79,6 +108,7 @@ pub fn sample_receipt() -> ReceiptData {
                 unit_price: Paise::new(12_000),
                 amount: Paise::new(12_000),
                 not_supplied_qty: 0,
+                section: String::new(),
             },
             ReceiptLine {
                 name: "Sunscreen SPF 50".into(),
@@ -87,9 +117,12 @@ pub fn sample_receipt() -> ReceiptData {
                 unit_price: Paise::ZERO,
                 amount: Paise::ZERO,
                 not_supplied_qty: 1,
+                section: String::new(),
             },
         ],
         subtotal: Paise::new(16_000),
+        breakdown: Vec::new(),
+        discount_label: default_discount_label(),
         discount: Paise::new(1_000),
         tax_label: "GST included".into(),
         tax: Paise::new(tax),
@@ -100,5 +133,6 @@ pub fn sample_receipt() -> ReceiptData {
         change_due: Some(Paise::new(5_000)),
         billed_by: Some("Priya".into()),
         footer: Some("Thank you. Get well soon!".into()),
+        notice: Some(E_RECEIPT_NOTICE.into()),
     }
 }

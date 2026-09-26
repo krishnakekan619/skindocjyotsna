@@ -42,6 +42,8 @@ export interface ClinicSettings {
   roundToRupee: boolean;
   utcOffsetMinutes: number;
   returnWindowDays: number;
+  /** Placeholders: {name} {clinic} {billNo} {total}. */
+  whatsappMessage: string;
 }
 
 /** clinic_services::auth::NewAccount */
@@ -243,21 +245,74 @@ export interface ClientRow {
   isActive: boolean;
   createdAt: Timestamp;
   updatedAt: Timestamp;
+  /** Set when this record was merged into another client. */
+  mergedIntoClientId: number | null;
 }
 
-export type ClientInput = Omit<ClientRow, 'id' | 'clientCode' | 'lastVisitAt' | 'createdAt' | 'updatedAt'> & { id: number | null };
+export type ClientInput = Omit<ClientRow, 'id' | 'clientCode' | 'lastVisitAt' | 'createdAt' | 'updatedAt' | 'mergedIntoClientId'> & {
+  id: number | null;
+  /** The user saw the possible duplicates and chose to create a new client anyway. */
+  allowDuplicate?: boolean;
+};
+
+/** clinic_services::clients::DuplicateQuery */
+export interface DuplicateQuery {
+  fullName: string;
+  phone: string;
+  dateOfBirth: IsoDate | null;
+  excludeId: number | null;
+}
+
+export type DuplicateReason = 'PHONE' | 'NAME' | 'SIMILAR_NAME';
+
+export interface DuplicateMatch {
+  client: ClientRow;
+  reason: DuplicateReason;
+  /** Likely the same person: creating a new client needs an explicit confirmation. */
+  strong: boolean;
+}
+
+export interface DuplicateGroup {
+  reason: 'PHONE' | 'NAME';
+  clients: (ClientRow & { billCount: number })[];
+}
+
+export interface MergeResult {
+  client: ClientRow;
+  movedBills: number;
+}
 
 export interface Visit {
   bill: BillRow;
   items: BillItemRow[];
+  services: ServiceItemRow[];
 }
 
 export interface ClientProfile {
   client: ClientRow;
   visits: Visit[];
   visitCount: number;
+  billCount: number;
   totalSpentPaise: Paise;
 }
+
+// ---- Consultations & procedures --------------------------------------------------------------
+
+export type ServiceKind = 'CONSULTATION' | 'PROCEDURE';
+
+/** repo::services::ServiceRow */
+export interface ServiceRow {
+  id: number;
+  kind: ServiceKind;
+  name: string;
+  defaultPricePaise: Paise;
+  gstRateBp: number;
+  discountEligible: boolean;
+  isActive: boolean;
+  sortOrder: number;
+}
+
+export type ServiceInput = Omit<ServiceRow, 'id'> & { id: number | null };
 
 // ---- Billing -----------------------------------------------------------------------------------
 
@@ -280,10 +335,18 @@ export interface PaymentInput {
   reference: string;
 }
 
+/** A consultation or procedure; `unitPricePaise` null = the standard price. */
+export interface ServiceLineInput {
+  serviceId: number;
+  qty: number;
+  unitPricePaise: Paise | null;
+}
+
 export interface BillInput {
   idempotencyKey: string;
   clientId: number | null;
   lines: BillLineInput[];
+  services: ServiceLineInput[];
   discount: Discount;
   payments: PaymentInput[];
   amountReceivedPaise: Paise | null;
@@ -307,8 +370,27 @@ export interface QuoteLine {
   expiresSoon: boolean;
 }
 
+export interface QuoteServiceLine {
+  serviceId: number;
+  kind: ServiceKind;
+  name: string;
+  qty: number;
+  unitPricePaise: Paise;
+  defaultPricePaise: Paise;
+  grossPaise: Paise;
+  discountSharePaise: Paise;
+  netPaise: Paise;
+  taxPaise: Paise;
+}
+
 export interface Quote {
   lines: QuoteLine[];
+  serviceLines: QuoteServiceLine[];
+  consultationPaise: Paise;
+  proceduresPaise: Paise;
+  productsPaise: Paise;
+  /** What the discount applies to (medicines & products). */
+  eligibleSubtotalPaise: Paise;
   subtotalPaise: Paise;
   discountPaise: Paise;
   taxPaise: Paise;
@@ -375,6 +457,24 @@ export interface BillItemRow {
   batches: ItemBatchRow[];
 }
 
+/** A consultation or procedure line of a bill. */
+export interface ServiceItemRow {
+  id: number;
+  billId: number;
+  lineNo: number;
+  serviceId: number;
+  kind: ServiceKind;
+  name: string;
+  qty: number;
+  unitPricePaise: Paise;
+  defaultPricePaise: Paise;
+  discountEligible: boolean;
+  discountSharePaise: Paise;
+  gstRateBp: number;
+  taxPaise: Paise;
+  lineTotalPaise: Paise;
+}
+
 export interface PaymentRow {
   id: number;
   method: PaymentMethod;
@@ -387,7 +487,17 @@ export interface PaymentRow {
 export interface BillDetail {
   bill: BillRow;
   items: BillItemRow[];
+  services: ServiceItemRow[];
   payments: PaymentRow[];
+}
+
+/** commands::billing::WhatsAppHandoff */
+export interface WhatsAppHandoff {
+  billNo: string;
+  clientName: string;
+  fileName: string;
+  /** The PDF is on the clipboard: paste it into the chat. */
+  pdfCopied: boolean;
 }
 
 export interface BillFilter {
@@ -425,6 +535,13 @@ export interface ReceiptLine {
   unitPrice: Paise;
   amount: Paise;
   notSuppliedQty: number;
+  /** "Consultation", "Procedures", "Medicines & Products", or "" (no headings). */
+  section: string;
+}
+
+export interface ReceiptTotal {
+  label: string;
+  amount: Paise;
 }
 
 export interface ReceiptPayment {
@@ -443,6 +560,9 @@ export interface ReceiptData {
   clientLabel: string | null;
   lines: ReceiptLine[];
   subtotal: Paise;
+  /** Section subtotals shown instead of "Subtotal" when the bill has consultations/procedures. */
+  breakdown: ReceiptTotal[];
+  discountLabel: string;
   discount: Paise;
   taxLabel: string;
   tax: Paise;
@@ -453,6 +573,7 @@ export interface ReceiptData {
   changeDue: Paise | null;
   billedBy: string | null;
   footer: string | null;
+  notice: string | null;
 }
 
 // ---- Reports -----------------------------------------------------------------------------------
@@ -532,7 +653,7 @@ export interface HealthReport {
   ledgerMismatchBatchIds: number[];
 }
 
-export type BackupKind = 'manual' | 'auto' | 'pre-restore';
+export type BackupKind = 'manual' | 'auto' | 'pre-restore' | 'pre-upgrade';
 
 export interface BackupFile {
   fileName: string;

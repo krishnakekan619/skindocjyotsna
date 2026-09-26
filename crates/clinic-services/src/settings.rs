@@ -14,6 +14,11 @@ use crate::{ServiceError, Session};
 
 const CLINIC_KEY: &str = "clinic.profile";
 
+/// The WhatsApp message typed in for the client when a receipt is shared (editable in Clinic
+/// details). Placeholders: {name} (client's first name), {clinic}, {billNo}, {total}.
+/// No medicines or other health details (privacy).
+pub const DEFAULT_WHATSAPP_MESSAGE: &str = "Hello {name},\n\nThank you for visiting {clinic}.\n\nPlease find your e-receipt {billNo} attached.\nTotal: {total}\n\nThis is a computer-generated e-receipt and does not require a signature or stamp.\n\nThank you,\n{clinic}";
+
 /// Clinic details printed on receipts, plus clinic-wide preferences.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -35,6 +40,8 @@ pub struct ClinicSettings {
     pub utc_offset_minutes: i32,
     /// Receptionists may process returns up to this many days after the bill (D18).
     pub return_window_days: u32,
+    /// Message typed in when a receipt is shared on WhatsApp (see `DEFAULT_WHATSAPP_MESSAGE`).
+    pub whatsapp_message: String,
 }
 
 impl Default for ClinicSettings {
@@ -52,6 +59,7 @@ impl Default for ClinicSettings {
             round_to_rupee: true,
             utc_offset_minutes: DEFAULT_UTC_OFFSET_MINUTES,
             return_window_days: 7,
+            whatsapp_message: DEFAULT_WHATSAPP_MESSAGE.to_string(),
         }
     }
 }
@@ -72,6 +80,10 @@ impl ClinicSettings {
             round_to_rupee: self.round_to_rupee,
             utc_offset_minutes: self.utc_offset_minutes,
             return_window_days: self.return_window_days,
+            whatsapp_message: match self.whatsapp_message.trim() {
+                "" => DEFAULT_WHATSAPP_MESSAGE.to_string(),
+                text => text.to_string(),
+            },
         };
         settings.validate()?;
         Ok(settings)
@@ -115,6 +127,9 @@ impl ClinicSettings {
         }
         if !(0..=365).contains(&self.return_window_days) {
             return Err(invalid("returnWindowDays", "Return window must be 0 to 365 days."));
+        }
+        if chars(&self.whatsapp_message) > 1_000 {
+            return Err(invalid("whatsappMessage", "The WhatsApp message must be at most 1000 characters."));
         }
         Ok(())
     }

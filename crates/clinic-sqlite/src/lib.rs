@@ -46,6 +46,7 @@ const MIGRATIONS: &[M<'static>] = &[
     M::up(include_str!("../migrations/0002_users_audit.sql")),
     M::up(include_str!("../migrations/0003_clinic.sql")),
     M::up(include_str!("../migrations/0004_bill_guards.sql")),
+    M::up(include_str!("../migrations/0005_services_clients.sql")),
 ];
 
 fn migrations() -> Migrations<'static> {
@@ -79,7 +80,26 @@ impl Database {
         let mut conn = Connection::open(path)?;
         configure_file_connection(&conn)?;
         migrations().to_latest(&mut conn)?;
+        repo::clients::fill_missing_keys(&conn)?;
         Ok(Self { conn, path: Some(path.to_path_buf()) })
+    }
+
+    /// Like `open`, but if this app version brings schema changes for an existing database, a
+    /// `pre-upgrade` backup is written to `backup_dir` first (returned), so an upgrade can always
+    /// be undone by restoring it. Client search keys are filled in afterwards.
+    pub fn open_with_upgrade_backup(path: &Path, backup_dir: &Path, app_version: &str) -> Result<(Self, Option<BackupFile>), DbError> {
+        let conn = Connection::open(path)?;
+        configure_file_connection(&conn)?;
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        let mut db = Self { conn, path: Some(path.to_path_buf()) };
+        let backup = if version > 0 && version < supported_schema_version() {
+            Some(db.create_backup(backup_dir, BackupKind::PreUpgrade, app_version)?)
+        } else {
+            None
+        };
+        migrations().to_latest(&mut db.conn)?;
+        repo::clients::fill_missing_keys(&db.conn)?;
+        Ok((db, backup))
     }
 
     /// In-memory database for tests.
@@ -177,6 +197,25 @@ pub(crate) mod test_support {
 mod tests {
     use super::test_support::TempDir;
     use super::*;
+
+    #[test]
+    fn an_upgrade_saves_a_backup_of_the_old_database_first() -> Result<(), DbError> {
+        let dir = TempDir::new("upgrade");
+        let path = dir.0.join("clinic.db");
+        let backups = dir.0.join("backups");
+        {
+            let mut conn = Connection::open(&path)?;
+            migrations().to_version(&mut conn, 4)?;
+        }
+        let (db, backup) = Database::open_with_upgrade_backup(&path, &backups, "0.3.0")?;
+        assert_eq!(db.status()?.schema_version, supported_schema_version());
+        let meta = backup.and_then(|b| b.meta).ok_or(DbError::NotAFileDatabase)?;
+        assert_eq!((meta.kind, meta.schema_version), (BackupKind::PreUpgrade, 4));
+        drop(db);
+        let (_, again) = Database::open_with_upgrade_backup(&path, &backups, "0.3.0")?;
+        assert!(again.is_none(), "no backup when the schema is already current");
+        Ok(())
+    }
 
     #[test]
     fn migrations_are_valid() {

@@ -32,6 +32,8 @@
 .receipt__footer { padding-top: 2mm; }
 .receipt__muted { color: #6b7280; font-size: 7.5pt; }
 .receipt__thanks { text-align: center; margin-top: 3mm !important; }
+.receipt__section td { padding-top: 1.6mm !important; font-size: 7.5pt; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: #6b7280; }
+.receipt__notice { text-align: center; margin-top: 2mm !important; font-size: 7pt; color: #6b7280; }
 
 @media print {
   @page { size: A5 portrait; margin: 10mm; }
