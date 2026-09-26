@@ -9,8 +9,8 @@ Goal: prove every risky building block works on Windows and macOS before any fea
 | 0.3 | Database: auto-create + migrations, WAL/FULL, integrity check, FTS5, backup, restore | 🟡 Rust written | 9 Rust tests written: backup/list, restore + safety copy, corrupt/foreign file rejected, newer-version refused, WAL reopen, FTS5 prefix search. **Not run yet** |
 | 0.4 | PDF receipt (A5, ₹ glyph, pagination) + print-ready HTML | 🟡 Rust written / preview verified | Receipt preview: 4 render tests pass. PDF: 5 Rust tests written. Noto Sans ₹ glyph confirmed in the font file. **Not run yet** |
 | 0.5 | Installers: Windows `.exe` (NSIS, all users), macOS universal `.dmg` | 🟡 Scripts written | `scripts/build-release.mjs` (one script for both OSs; preflight run here stops correctly with "Rust is not installed"). Clinic install from the bundle picks the newest version. GitHub Actions workflow ready. NSIS tool caching for offline builds. **No installer built yet** |
-| 0.6 | Rebuild-from-scratch drill: setup → install → restore backup, timed | ⏳ | |
-| 0.7 | Go/no-go report | ⏳ | |
+| 0.6 | Rebuild-from-scratch drill: setup → install → restore backup, timed | ➡️ Moved to Phases 8–9 | Needs a clean test PC and the real restore screen (see PHASE-0-REPORT.md) |
+| 0.7 | Go/no-go report | ✅ GO | `docs/PHASE-0-REPORT.md` |
 
 ## When Rust is installed on this PC (after `Install-DevPC.cmd`)
 
