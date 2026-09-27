@@ -230,6 +230,58 @@ pub fn login(db: &mut Database, username: &str, password: &str, now: i64) -> Res
     Ok(session)
 }
 
+/// An administrator's username and password typed at the desk to approve a discount. It counts
+/// wrong passwords towards that administrator's lockout, refuses while the account is locked and
+/// audits every failure, in its own committed write, so the approval box can never be used to
+/// guess an administrator's password (review 2026-09-27, H1). Returns the administrator's id.
+pub fn verify_admin_approval(db: &mut Database, username: &str, password: &str, now: i64) -> Result<i64, ServiceError> {
+    let username = policy::normalize_username(username);
+    let wrong = || invalid("approval", "Administrator username or password is not correct.");
+    let Some(user) = db.read(|c| users::find_by_username(c, &username))? else {
+        let _ = verify_secret(password, dummy_hash()?);
+        db.write(|c| audit::record(c, now, Actor::Anonymous { username_tried: &username }, "APPROVAL_FAILED", None, Some(json!({ "reason": "unknown_user" }))))?;
+        return Err(wrong());
+    };
+    let actor = || Actor::User { id: user.id, username: &user.username };
+    if user.locked_until.is_some_and(|until| until > now) {
+        db.write(|c| audit::record(c, now, actor(), "APPROVAL_FAILED", None, Some(json!({ "reason": "locked" }))))?;
+        return Err(invalid("approval", "This administrator account is locked for a few minutes after wrong passwords."));
+    }
+    if !verify_secret(password, &user.password_hash)? {
+        let failures = user.failed_login_count + 1;
+        let locked_until = policy::login_lockout(failures, now);
+        db.write(|c| {
+            users::record_login_failure(c, user.id, if locked_until.is_some() { 0 } else { failures }, locked_until, now)?;
+            audit::record(c, now, actor(), "APPROVAL_FAILED", None, Some(json!({ "reason": "wrong_password", "failures": failures })))?;
+            if locked_until.is_some() {
+                audit::record(c, now, actor(), "ACCOUNT_LOCKED", Some(("user", user.id.to_string())), None)?;
+            }
+            Ok::<_, ServiceError>(())
+        })?;
+        return Err(wrong());
+    }
+    if !user.is_active || role_of(&user)? != Role::Admin {
+        return Err(wrong());
+    }
+    Ok(user.id)
+}
+
+/// The signed-in user still exists, is active and keeps the role the session started with
+/// (an administrator may have changed that meanwhile). Checked on every command, reads too.
+pub fn session_still_valid(db: &Database, session: &Session) -> Result<bool, ServiceError> {
+    Ok(match db.read(|c| users::find_by_id(c, session.user_id))? {
+        Some(user) => user.is_active && role_of(&user)? == session.role,
+        None => false,
+    })
+}
+
+/// Asks the signed-in user for their password again before a drastic action (restore). Wrong
+/// guesses count towards the lockout like sign-in.
+pub fn confirm_password(db: &mut Database, actor: &Session, password: &str, now: i64) -> Result<(), ServiceError> {
+    let user = active_user(db, actor.user_id)?;
+    check_current_password(db, &user, password, now)
+}
+
 /// Unlocks the idle-locked screen for the signed-in user with their PIN. After 5 wrong PINs,
 /// PIN unlock is disabled until the full password is used (`unlock_with_password`).
 pub fn unlock_with_pin(db: &mut Database, user_id: i64, pin: &str, now: i64) -> Result<Session, ServiceError> {

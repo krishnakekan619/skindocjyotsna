@@ -40,7 +40,7 @@ const NAV: { section: string; items: NavItem[] }[] = [
     ],
   },
   {
-    section: 'Inventory',
+    section: t.nav.inventorySection,
     items: [
       { page: { name: 'expiry' }, label: t.nav.expiry },
       { page: { name: 'ledger' }, label: t.nav.ledger, adminOnly: true },
@@ -111,6 +111,7 @@ export function MainLayout({ status, session, setStatus }: { status: AppStatus; 
   // Ctrl/Cmd+N (or F1): new bill from anywhere (brief §28). Does not clear a bill in progress.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (status.locked) return;
       if (e.key === 'F1' || ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'n')) {
         e.preventDefault();
         setPage((current) => (current.name === 'newBill' ? current : { name: 'newBill' }));
@@ -118,7 +119,7 @@ export function MainLayout({ status, session, setStatus }: { status: AppStatus; 
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, []);
+  }, [status.locked]);
 
   const context = useMemo<AppContextValue>(
     () => ({

@@ -39,7 +39,10 @@ export function App() {
   // idle lock. Another user signing in gets a fresh app (keyed by user).
   return (
     <Box sx={{ minHeight: '100vh', bgcolor: 'background.default' }}>
-      <MainLayout key={status.session.userId} status={status} session={status.session} setStatus={setStatus} />
+      {/* inert: nothing behind the lock screen can be focused, clicked or typed into. */}
+      <Box inert={status.locked}>
+        <MainLayout key={status.session.userId} status={status} session={status.session} setStatus={setStatus} />
+      </Box>
       {status.locked && (
         <Box sx={{ position: 'fixed', inset: 0, zIndex: (theme) => theme.zIndex.modal + 10, bgcolor: 'background.default', overflow: 'auto' }}>
           <LockScreen status={status} onUnlocked={setStatus} />

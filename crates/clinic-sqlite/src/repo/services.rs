@@ -78,6 +78,10 @@ pub fn insert(conn: &Connection, s: &ServiceFields<'_>, now: i64) -> rusqlite::R
     Ok(conn.last_insert_rowid())
 }
 
+pub fn set_active(conn: &Connection, id: i64, is_active: bool, now: i64) -> rusqlite::Result<usize> {
+    conn.execute("UPDATE service SET is_active = ?2, updated_at = ?3 WHERE id = ?1", params![id, is_active, now])
+}
+
 /// The kind of an entry never changes (bills refer to it).
 pub fn update(conn: &Connection, id: i64, s: &ServiceFields<'_>, now: i64) -> rusqlite::Result<usize> {
     conn.execute(

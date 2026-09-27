@@ -718,6 +718,7 @@ fn add_stock(product_name: &str, vendor: &str, mrp: i64, bought: i64, qty: i64) 
         purchase_price_paise: bought,
         expiry_date: Some("2027-03-31".into()),
         qty,
+        request_key: None,
     }
 }
 
@@ -766,4 +767,125 @@ fn deleting_a_product_archives_it_when_it_has_history() -> TestResult {
     assert!(outcome.archived && !outcome.deleted);
     assert!(inventory::list_products(&clinic.db, &clinic.owner, ProductFilter::default(), NOW)?.iter().all(|p| p.id != clinic.cream));
     assert_ledger_consistent(&clinic)
+}
+
+// ---- v0.4.1 hardening (review 2026-09-27) --------------------------------------------------------
+
+#[test]
+fn wrong_approval_passwords_lock_the_admin_and_are_audited() -> TestResult {
+    let mut clinic = clinic()?;
+    let mut input = bill("bill-key-0200", vec![line(clinic.cream, 1)], Discount::Percent(BasisPoints::new(2_000)), cash(9_600));
+    input.approval = Some(Approval { username: "owner".into(), password: "guess".into() });
+    for _ in 0..5 {
+        assert!(matches!(billing::finalize(&mut clinic.db, &clinic.reception, input.clone(), NOW), Err(ServiceError::Validation { field: "approval", .. })));
+    }
+    // Now locked: even the right password is refused, at the desk and at sign-in.
+    input.approval = Some(Approval { username: "owner".into(), password: "owner-pass-1".into() });
+    assert!(matches!(billing::finalize(&mut clinic.db, &clinic.reception, input, NOW), Err(ServiceError::Validation { field: "approval", .. })));
+    assert!(matches!(auth::login(&mut clinic.db, "owner", "owner-pass-1", NOW), Err(ServiceError::AccountLocked { .. })));
+    let failures = clinic_services::audit::list(&clinic.db, &clinic.owner, 200, None)?.into_iter().filter(|e| e.action == "APPROVAL_FAILED").count();
+    assert!(failures >= 5, "every wrong approval is in the audit log");
+    Ok(())
+}
+
+#[test]
+fn product_names_with_percent_signs_are_found_again() -> TestResult {
+    let mut clinic = clinic()?;
+    let first = inventory::add_inventory(&mut clinic.db, &clinic.reception, add_stock("Tretinoin 0.025% Cream", "Derma Pharma", 30_000, 20_000, 3), NOW)?;
+    let second = inventory::add_inventory(&mut clinic.db, &clinic.reception, add_stock("tretinoin 0.025% cream", "Derma Pharma", 30_000, 20_000, 2), NOW)?;
+    assert_eq!(second.product_id, first.product_id, "same product, not a copy");
+    let found = inventory::list_products(&clinic.db, &clinic.reception, ProductFilter { text: "0.025%".into(), ..Default::default() }, NOW)?;
+    assert_eq!(found.len(), 1);
+    let underscore = inventory::list_products(&clinic.db, &clinic.reception, ProductFilter { text: "_".into(), ..Default::default() }, NOW)?;
+    assert!(underscore.is_empty(), "_ matches itself, not any character");
+    Ok(())
+}
+
+#[test]
+fn add_inventory_is_sent_once_per_form() -> TestResult {
+    let mut clinic = clinic()?;
+    let input = inventory::AddInventoryInput { request_key: Some("form-key-0001".into()), ..add_stock("Sunscreen SPF 30", "Derma Pharma", 50_000, 35_000, 4) };
+    let first = inventory::add_inventory(&mut clinic.db, &clinic.reception, input.clone(), NOW)?;
+    let again = inventory::add_inventory(&mut clinic.db, &clinic.reception, input, NOW + 1)?;
+    assert_eq!(again.id, first.id);
+    assert_eq!(sellable(&clinic, first.product_id)?, 4, "a double-click does not double the stock");
+    Ok(())
+}
+
+#[test]
+fn a_hand_typed_lot_number_never_blocks_add_inventory() -> TestResult {
+    let mut clinic = clinic()?;
+    // The next automatic number would be LOT-000001: it is already taken by hand.
+    inventory::stock_in(&mut clinic.db, &clinic.owner, stock_in(clinic.paracetamol, "lot-000001", "2027-06-30", 2_000, 5), NOW)?;
+    let mut input = add_stock("", "Derma Pharma", 2_000, 1_000, 5);
+    input.product_id = Some(clinic.paracetamol);
+    let lot = inventory::add_inventory(&mut clinic.db, &clinic.reception, input, NOW)?;
+    assert_eq!(lot.batch_no, "LOT-000002");
+    Ok(())
+}
+
+#[test]
+fn a_deactivated_service_typed_again_comes_back() -> TestResult {
+    let mut clinic = clinic()?;
+    let services = catalog::list(&clinic.db, &clinic.owner, true)?;
+    let neb = services.iter().find(|s| s.name == "Nebulization").ok_or(ServiceError::NotFound("service"))?.clone();
+    catalog::save(
+        &mut clinic.db,
+        &clinic.owner,
+        ServiceInput {
+            id: Some(neb.id),
+            kind: neb.kind.clone(),
+            name: neb.name.clone(),
+            default_price_paise: neb.default_price_paise,
+            gst_rate_bp: 0,
+            discount_eligible: false,
+            is_active: false,
+            sort_order: neb.sort_order,
+        },
+        NOW,
+    )?;
+    let mut input = bill("bill-key-0210", Vec::new(), Discount::None, cash(30_000));
+    input.services = vec![typed_service("PROCEDURE", "nebulization", 30_000)];
+    let done = billing::finalize(&mut clinic.db, &clinic.reception, input, NOW)?;
+    assert_eq!(done.services[0].service_id, neb.id);
+    assert!(catalog::list(&clinic.db, &clinic.reception, false)?.iter().any(|s| s.id == neb.id), "active again");
+    Ok(())
+}
+
+#[test]
+fn a_percent_on_a_bill_without_medicines_needs_no_approval() -> TestResult {
+    let clinic = clinic()?;
+    let (consultation, _) = consultation_and_dressing(&clinic)?;
+    let quote = billing::quote(&clinic.db, &clinic.reception, &[], &[service_line(consultation)], Discount::Percent(BasisPoints::new(2_000)), None, NOW)?;
+    assert_eq!((quote.discount_paise, quote.needs_approval), (0, false));
+    Ok(())
+}
+
+#[test]
+fn an_old_settings_record_never_gets_a_standard_discount_above_the_limit() -> TestResult {
+    let mut clinic = clinic()?;
+    // Saved before v0.3.1: a 5% limit and no standard discount field.
+    let old = r#"{"name":"Test Clinic","receptionistDiscountCapPercent":5}"#;
+    clinic.db.write(|c| clinic_sqlite::repo::settings::set(c, "clinic.profile", old))?;
+    let settings = clinic_services::settings::get_clinic(&clinic.db)?;
+    assert_eq!(settings.default_medicine_discount_percent, 5);
+    clinic_services::settings::update_clinic(&mut clinic.db, &clinic.owner, ClinicSettings { phone: "020-1234".into(), ..settings }, NOW)?;
+    Ok(())
+}
+
+#[test]
+fn a_deactivated_user_loses_the_session_and_bills_keep_their_client() -> TestResult {
+    let mut clinic = clinic()?;
+    assert!(clinic_services::auth::session_still_valid(&clinic.db, &clinic.reception)?);
+    let reception = users::list(&clinic.db, &clinic.owner, NOW)?.into_iter().find(|u| u.username == "reception").ok_or(ServiceError::NotFound("user"))?;
+    users::update(&mut clinic.db, &clinic.owner, reception.id, users::UserUpdate { full_name: reception.full_name.clone(), role: Role::Receptionist, is_active: false }, NOW)?;
+    assert!(!clinic_services::auth::session_still_valid(&clinic.db, &clinic.reception)?);
+
+    let client = clients::save(&mut clinic.db, &clinic.owner, client("Asha Rao", "91234 56789"), NOW)?;
+    let mut input = bill("bill-key-0220", vec![line(clinic.paracetamol, 1)], Discount::None, cash(2_000));
+    input.client_id = Some(client.id);
+    let done = billing::finalize(&mut clinic.db, &clinic.owner, input, NOW)?;
+    let cleared = clinic.db.write(|c| c.execute("UPDATE bill SET client_id = NULL WHERE id = ?1", [done.bill.id]));
+    assert!(cleared.is_err(), "a bill can never be detached from its client");
+    Ok(())
 }

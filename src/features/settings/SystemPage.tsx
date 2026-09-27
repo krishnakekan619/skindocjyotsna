@@ -8,6 +8,7 @@ import { BackupCard } from '../backup/BackupCard';
 import { SystemStatusCard } from '../system/SystemStatusCard';
 
 const FOLDERS: [AppFolder, string][] = [
+  ['mirror', 'Second backup (skindocjyotsnaBackup)'],
   ['backups', 'Backups'],
   ['exports', 'Receipts (PDF)'],
   ['logs', 'Logs'],

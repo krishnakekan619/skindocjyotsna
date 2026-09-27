@@ -135,7 +135,7 @@ pub fn search(conn: &Connection, text: &str, include_inactive: bool, limit: u32)
     let digits: String = text.chars().filter(char::is_ascii_digit).collect();
     let mut stmt = conn.prepare(&format!(
         "{SELECT} WHERE merged_into_client_id IS NULL AND (:all = 1 OR is_active = 1)
-            AND (:text = '' OR (:key <> '' AND name_key LIKE :key_like) OR client_code LIKE :code_like
+            AND (:text = '' OR (:key <> '' AND name_key LIKE :key_like) OR client_code LIKE :code_like ESCAPE '!'
                  OR (length(:digits) >= 3 AND phone_digits LIKE :digits_like))
          ORDER BY (:key <> '' AND name_key LIKE :key_prefix) DESC, last_visit_at IS NULL, last_visit_at DESC,
                   full_name COLLATE NOCASE

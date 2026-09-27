@@ -147,10 +147,14 @@ impl ClinicSettings {
 }
 
 pub(crate) fn load(conn: &Connection) -> Result<ClinicSettings, ServiceError> {
-    match settings::get(conn, CLINIC_KEY)? {
-        Some(json) => serde_json::from_str(&json).map_err(|e| ServiceError::Corrupt(format!("clinic settings: {e}"))),
-        None => Ok(ClinicSettings::default()),
-    }
+    let mut clinic: ClinicSettings = match settings::get(conn, CLINIC_KEY)? {
+        Some(json) => serde_json::from_str(&json).map_err(|e| ServiceError::Corrupt(format!("clinic settings: {e}")))?,
+        None => ClinicSettings::default(),
+    };
+    // Settings saved before v0.3.1 have no standard discount and get the default 10%: never more
+    // than the clinic's receptionist limit, or every bill would need an approval.
+    clinic.default_medicine_discount_percent = clinic.default_medicine_discount_percent.min(clinic.receptionist_discount_cap_percent);
+    Ok(clinic)
 }
 
 /// Clinic settings plus today's date in the clinic's time zone.
@@ -185,6 +189,7 @@ pub fn update_clinic(db: &mut Database, actor: &Session, clinic: ClinicSettings,
             json!({
                 "idleLockMinutes": s.idle_lock_minutes,
                 "receptionistDiscountCapPercent": s.receptionist_discount_cap_percent,
+                "defaultMedicineDiscountPercent": s.default_medicine_discount_percent,
                 "roundToRupee": s.round_to_rupee,
                 "utcOffsetMinutes": s.utc_offset_minutes,
                 "returnWindowDays": s.return_window_days,

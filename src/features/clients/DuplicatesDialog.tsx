@@ -139,7 +139,7 @@ function MergeDialog({ group, onClose, onMerged }: { group: DuplicateGroup; onCl
           </RadioGroup>
           {others.length > 1 && (
             <>
-              <Typography sx={{ fontWeight: 600 }}>{t.clients.merge.replace('…', '')}</Typography>
+              <Typography sx={{ fontWeight: 600 }}>{t.clients.mergeWhich}</Typography>
               <RadioGroup value={secondary?.id ?? 0} onChange={(e) => setSecondaryId(Number(e.target.value))}>
                 {others.map((c) => (
                   <FormControlLabel key={c.id} value={c.id} control={<Radio />} label={<ClientLabel client={c} />} />

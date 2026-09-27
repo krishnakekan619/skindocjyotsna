@@ -164,6 +164,8 @@ export interface AddInventoryInput {
   purchasePricePaise: Paise;
   expiryDate: IsoDate;
   qty: number;
+  /** One per form: a double-click or retry adds the stock once. */
+  requestKey: string;
 }
 
 export interface DeleteOutcome {
@@ -714,6 +716,9 @@ export interface SystemInfo {
   backupDir: string;
   exportDir: string;
   logDir: string;
+  /** Second backup copy: the skindocjyotsnaBackup folder. */
+  mirrorDir: string;
+  mirrorBackups: number;
   database: DatabaseStatus;
 }
 
@@ -738,7 +743,7 @@ export interface RestoreResult {
   safetyBackup: BackupFile;
 }
 
-export type AppFolder = 'backups' | 'exports' | 'data' | 'logs';
+export type AppFolder = 'backups' | 'exports' | 'data' | 'logs' | 'mirror';
 
 /** Error shape returned by every Rust command. `message` is safe to show to staff. */
 export interface CommandError {

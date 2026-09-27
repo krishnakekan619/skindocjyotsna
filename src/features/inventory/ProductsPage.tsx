@@ -61,6 +61,8 @@ export function ProductsPage() {
   const categories = useLoader(() => api.listCategories(), []);
   const suppliers = useLoader(() => api.listSuppliers(), []);
   const soon = addDaysIso(todayIso(), 30);
+  // A new filter starts again from the first page.
+  useEffect(() => setLimit(PAGE), [categoryId, includeInactive, stock]);
 
   return (
     <>

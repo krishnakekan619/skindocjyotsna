@@ -4,7 +4,6 @@
 //! update that can never go below zero, the ledger records every change, and a repeated
 //! Finalize with the same key returns the bill that was already made (D10).
 
-use clinic_core::auth::hashing::verify_secret;
 use clinic_core::auth::{Permission, Role};
 use clinic_core::fefo::{self, Allocation};
 use clinic_core::money::{BasisPoints, Paise};
@@ -229,8 +228,8 @@ fn plan_services(c: &Connection, inputs: &[ServiceLineInput]) -> Result<Vec<Plan
     let mut planned = Vec::with_capacity(inputs.len());
     for input in inputs {
         let service = match input.service_id {
+            // A deactivated entry (e.g. on a bill being corrected) is reactivated at Finalize.
             Some(id) => catalog::find(c, id)?
-                .filter(|s| s.is_active)
                 .ok_or_else(|| ServiceError::NotAllowed("Unable to complete the operation. The selected consultation or procedure is no longer available.".into()))?,
             None => {
                 let kind = input
@@ -381,6 +380,9 @@ pub struct Quote {
 /// typed (10% is exactly 10%, even if rounding to paise makes the amount a little higher);
 /// a rupee discount is converted to a rate of the amount it applies to.
 fn discount_rate(discount: Discount, totals: &pricing::BillTotals) -> u32 {
+    if totals.discount.value() == 0 {
+        return 0; // e.g. a percent typed on a bill with nothing the discount applies to
+    }
     match discount {
         Discount::Percent(bp) => bp.value(),
         Discount::None | Discount::Amount(_) => pricing::discount_rate_bp(totals.discount, totals.eligible_subtotal),
@@ -525,20 +527,23 @@ fn validate_key(key: &str) -> Result<(), ServiceError> {
     Ok(())
 }
 
-/// Checks an administrator's credentials; `missing` is the error when none were given.
-fn approve(c: &Connection, approval: Option<&Approval>, missing: ServiceError) -> Result<i64, ServiceError> {
-    let Some(approval) = approval else { return Err(missing) };
-    let username = clinic_core::auth::policy::normalize_username(&approval.username);
-    let wrong = || invalid("approval", "Administrator username or password is not correct.");
-    let admin = users::find_by_username(c, &username)?.ok_or_else(wrong)?;
-    if !admin.is_active || role_of(&admin)? != Role::Admin || !verify_secret(&approval.password, &admin.password_hash)? {
-        return Err(wrong());
+/// Checks the administrator's credentials BEFORE the bill's transaction, so a wrong password is
+/// counted and audited even though the bill is not saved (`auth::verify_admin_approval`).
+fn verified_approval(db: &mut Database, approval: Option<&Approval>, now: i64) -> Result<Option<i64>, ServiceError> {
+    approval.map(|a| crate::auth::verify_admin_approval(db, &a.username, &a.password, now)).transpose()
+}
+
+/// The approving administrator (already verified); `missing` is the error when none was given.
+fn approve(c: &Connection, approved_admin: Option<i64>, missing: ServiceError) -> Result<i64, ServiceError> {
+    let Some(admin_id) = approved_admin else { return Err(missing) };
+    match users::find_by_id(c, admin_id)? {
+        Some(admin) if admin.is_active && role_of(&admin)? == Role::Admin => Ok(admin_id),
+        _ => Err(invalid("approval", "Administrator username or password is not correct.")),
     }
-    Ok(admin.id)
 }
 
 /// Creates the bill inside the caller's transaction and returns its id.
-fn finalize_in_tx(c: &Connection, actor: &Session, input: &BillInput, now: i64, replaces: Option<i64>) -> Result<i64, ServiceError> {
+fn finalize_in_tx(c: &Connection, actor: &Session, input: &BillInput, now: i64, replaces: Option<i64>, approved_admin: Option<i64>) -> Result<i64, ServiceError> {
     let (clinic, today) = clinic_today(c, now)?;
     let client_id = match (input.client_id, &input.new_client) {
         (Some(client_id), _) => {
@@ -560,7 +565,7 @@ fn finalize_in_tx(c: &Connection, actor: &Session, input: &BillInput, now: i64, 
 
     let rate = discount_rate(input.discount, totals);
     let approved_by = if needs_approval(actor, rate, &clinic) {
-        Some(approve(c, input.approval.as_ref(), ServiceError::DiscountApprovalRequired { cap_percent: clinic.receptionist_discount_cap_percent })?)
+        Some(approve(c, approved_admin, ServiceError::DiscountApprovalRequired { cap_percent: clinic.receptionist_discount_cap_percent })?)
     } else {
         None
     };
@@ -663,7 +668,14 @@ fn finalize_in_tx(c: &Connection, actor: &Session, input: &BillInput, now: i64, 
                     id
                 }
             },
-            id => id,
+            id => {
+                // A deactivated entry typed again by name comes back into the list (owner decision).
+                if !planned.service.is_active {
+                    catalog::set_active(c, id, true, now)?;
+                    audit::record(c, now, Actor::from(actor), "SERVICE_REACTIVATE", Some(("service", id.to_string())), Some(json!({ "name": planned.service.name, "onBill": true })))?;
+                }
+                id
+            }
         };
         repo::insert_service_item(
             c,
@@ -705,12 +717,13 @@ fn finalize_in_tx(c: &Connection, actor: &Session, input: &BillInput, now: i64, 
 pub fn finalize(db: &mut Database, actor: &Session, input: BillInput, now: i64) -> Result<BillDetail, ServiceError> {
     actor.require(Permission::CreateBills)?;
     validate_key(&input.idempotency_key)?;
+    let approved_admin = verified_approval(db, input.approval.as_ref(), now)?;
     db.write(|c| {
         verify_actor(c, actor)?;
         if let Some(existing) = bill_for_key(c, &input.idempotency_key, actor, &input, None)? {
             return load_detail(c, existing); // double-click, retry or restart: same bill
         }
-        let bill_id = finalize_in_tx(c, actor, &input, now, None)?;
+        let bill_id = finalize_in_tx(c, actor, &input, now, None, approved_admin)?;
         load_detail(c, bill_id)
     })
 }
@@ -826,6 +839,7 @@ pub fn correct(db: &mut Database, actor: &Session, input: CorrectionInput, now: 
     actor.require(Permission::CreateBills)?;
     validate_key(&input.bill.idempotency_key)?;
     let reason = validate_reason(&input.reason)?.to_string();
+    let approved_admin = verified_approval(db, input.bill.approval.as_ref(), now)?;
     db.write(|c| {
         verify_actor(c, actor)?;
         if let Some(existing) = bill_for_key(c, &input.bill.idempotency_key, actor, &input.bill, Some(input.original_bill_id))? {
@@ -841,7 +855,7 @@ pub fn correct(db: &mut Database, actor: &Session, input: CorrectionInput, now: 
         let note = format!("Correction of {}: {}", original.bill.bill_no, reason);
         reverse_in_tx(c, &original, actor, &note, now)?;
         repo::close_bill(c, original.bill.id, "CORRECTED", actor.user_id, &reason, now)?;
-        let new_id = finalize_in_tx(c, actor, &input.bill, now, Some(original.bill.id))?;
+        let new_id = finalize_in_tx(c, actor, &input.bill, now, Some(original.bill.id), approved_admin)?;
         repo::set_corrected_by(c, original.bill.id, new_id)?;
         audit::record(c, now, Actor::from(actor), "BILL_CORRECT", Some(("bill", original.bill.id.to_string())), Some(json!({ "from": original.bill.bill_no, "toBillId": new_id })))?;
         load_detail(c, new_id)

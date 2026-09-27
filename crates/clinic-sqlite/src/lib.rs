@@ -39,6 +39,8 @@ pub enum DbError {
     BackupFromNewerVersion { backup: i64, supported: i64 },
     #[error("operation needs a file-based database")]
     NotAFileDatabase,
+    #[error("this data was saved by a newer version of SkinDocJyotsna (data version {found}, this app supports up to {supported}); install the newer version of the app again")]
+    DatabaseFromNewerVersion { found: i64, supported: i64 },
 }
 
 const MIGRATIONS: &[M<'static>] = &[
@@ -48,6 +50,7 @@ const MIGRATIONS: &[M<'static>] = &[
     M::up(include_str!("../migrations/0004_bill_guards.sql")),
     M::up(include_str!("../migrations/0005_services_clients.sql")),
     M::up(include_str!("../migrations/0006_product_types.sql")),
+    M::up(include_str!("../migrations/0007_hardening.sql")),
 ];
 
 fn migrations() -> Migrations<'static> {
@@ -92,6 +95,9 @@ impl Database {
         let conn = Connection::open(path)?;
         configure_file_connection(&conn)?;
         let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        if version > supported_schema_version() {
+            return Err(DbError::DatabaseFromNewerVersion { found: version, supported: supported_schema_version() });
+        }
         let mut db = Self { conn, path: Some(path.to_path_buf()) };
         let backup = if version > 0 && version < supported_schema_version() {
             Some(db.create_backup(backup_dir, BackupKind::PreUpgrade, app_version)?)

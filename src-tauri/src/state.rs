@@ -64,6 +64,13 @@ impl AppState {
             return Err(CommandError::user("LOCKED", "The screen is locked. Enter your PIN or password to continue."));
         }
         auth.last_activity = now;
+        drop(auth);
+        // The account may have been deactivated or demoted since sign-in: end the session.
+        let still_valid = clinic_services::auth::session_still_valid(&*self.db()?, &session).unwrap_or(false);
+        if !still_valid {
+            self.sign_out()?;
+            return Err(CommandError::user("NOT_SIGNED_IN", "Your account was changed by an administrator. Please sign in again."));
+        }
         if !session.role.allows(permission) {
             return Err(CommandError::user("PERMISSION_DENIED", "You don't have permission to do this."));
         }

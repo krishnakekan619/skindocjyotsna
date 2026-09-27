@@ -69,9 +69,11 @@ export function ClientsPage() {
                   <TableCell>{c.phone || '—'}</TableCell>
                   <TableCell>{formatDateTime(c.lastVisitAt)}</TableCell>
                   <TableCell align="right" onClick={(e) => e.stopPropagation()}>
-                    <Button size="small" onClick={() => navigate({ name: 'newBill', clientId: c.id })}>
-                      {t.nav.newBill}
-                    </Button>
+                    {c.isActive && (
+                      <Button size="small" onClick={() => navigate({ name: 'newBill', clientId: c.id })}>
+                        {t.nav.newBill}
+                      </Button>
+                    )}
                   </TableCell>
                 </TableRow>
               ))}

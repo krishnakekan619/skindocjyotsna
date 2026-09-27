@@ -89,6 +89,6 @@ export const tauriApi: ClinicApi = {
   getHealth: () => call('get_health'),
   listBackups: () => call('list_backups'),
   createBackup: () => call('create_backup'),
-  restoreBackup: (fileName) => call('restore_backup', { fileName }),
+  restoreBackup: (fileName, password) => call('restore_backup', { fileName, password }),
   openFolder: (folder) => call('open_folder', { folder }),
 };

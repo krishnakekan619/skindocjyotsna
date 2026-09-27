@@ -22,19 +22,26 @@ pub struct AppPaths {
     /// patient names and Documents is often synced to OneDrive/iCloud.
     pub export_dir: PathBuf,
     pub log_dir: PathBuf,
+    /// Second copy of every backup (DEC-037): `skindocjyotsnaBackup` in the user's home folder,
+    /// outside the app's folder, so it survives an uninstall or a deleted app folder.
+    pub mirror_dir: PathBuf,
 }
+
+/// Folder name of the second backup copy (owner decision 2026-09-27).
+pub const MIRROR_FOLDER: &str = "skindocjyotsnaBackup";
 
 impl AppPaths {
     pub fn resolve(app: &AppHandle) -> Result<Self, Box<dyn std::error::Error>> {
-        let (base, log_dir) = match std::env::var_os(DATA_DIR_OVERRIDE_ENV) {
+        let (base, log_dir, mirror_dir) = match std::env::var_os(DATA_DIR_OVERRIDE_ENV) {
             Some(base) => {
                 let base = PathBuf::from(base);
                 let logs = base.join("logs");
-                (base, logs)
+                let mirror = base.join(MIRROR_FOLDER);
+                (base, logs, mirror)
             }
-            None => (app.path().app_local_data_dir()?, app.path().app_log_dir()?),
+            None => (app.path().app_local_data_dir()?, app.path().app_log_dir()?, app.path().home_dir()?.join(MIRROR_FOLDER)),
         };
-        let paths = Self { data_dir: base.join("data"), backup_dir: base.join("backups"), export_dir: base.join("exports"), log_dir };
+        let paths = Self { data_dir: base.join("data"), backup_dir: base.join("backups"), export_dir: base.join("exports"), log_dir, mirror_dir };
         for dir in [&paths.data_dir, &paths.backup_dir, &paths.export_dir, &paths.log_dir] {
             std::fs::create_dir_all(dir)?;
         }

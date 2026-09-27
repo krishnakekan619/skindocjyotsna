@@ -84,6 +84,7 @@ export interface ClinicApi {
   listBackups(): Promise<T.BackupFile[]>;
   createBackup(): Promise<T.BackupFile>;
   /** `fileName` must be one returned by `listBackups`. Signs everyone out. */
-  restoreBackup(fileName: string): Promise<T.RestoreResult>;
+  /** Needs the administrator's password again. */
+  restoreBackup(fileName: string, password: string): Promise<T.RestoreResult>;
   openFolder(folder: T.AppFolder): Promise<void>;
 }

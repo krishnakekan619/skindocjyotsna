@@ -1,6 +1,57 @@
 # Changelog
 
-## v0.4.0 (unreleased): simple inventory
+## v0.4.1 (unreleased): hardening after the full review (2026-09-27)
+
+### Security
+- **Discount approval:**
+  - wrong administrator passwords now count towards that administrator's lockout;
+  - they are refused while the account is locked, and every failure is in the audit log;
+  - so the approval box can no longer be used to guess an administrator's password.
+- **Restore** asks for your password again.
+- **Account changes take effect at once:** every action checks that the signed-in account is still active with the same role. A deactivated or demoted user is signed out straight away.
+- **Lock screen:** nothing behind it can be focused, clicked or typed into, and F1, F2, F4 and Ctrl/⌘+N do nothing while it's up.
+
+### Money, stock and billing
+- **Names with % and _:** product names like "Tretinoin 0.025%" are found again, so they are no longer duplicated on each delivery. Searches treat `%` and `_` as plain characters.
+- **Add Inventory:**
+  - it runs once per form, so a double-click or retry no longer doubles the stock;
+  - a hand-typed batch number can no longer block it;
+  - the product type is optional.
+- **Deactivated services:** a deactivated consultation or procedure typed again, or found on a corrected bill, is reactivated automatically.
+- **Corrections** keep the price actually charged, even if the list price has changed since.
+- **Discounts:**
+  - no discount is sent when a bill has no medicines;
+  - a percentage on a services-only bill no longer asks for approval.
+- **Finalize:**
+  - it waits for the up-to-date total, so Ctrl+Enter right after an edit no longer sends the old total;
+  - a held key sends one request;
+  - the print choice is kept after an approval.
+- **New clients:**
+  - a new client is created only from a real name;
+  - a phone number typed in the name box offers **Use as mobile number**;
+  - if the backend finds a duplicate at Finalize, the **Use / different person** choice appears straight away.
+- **Search results:** slow replies no longer overwrite newer ones.
+- **Discount setting:** after an upgrade, the standard discount is never above the receptionist limit.
+
+### Reliability
+- **Second backup copy:** every backup is also copied to **`skindocjyotsnaBackup`** in your home folder (last 30 automatic copies kept). Open it from **Backup & system**. It's on the same disk, so also copy it to a USB drive now and then.
+- **Crashes** are written to `logs/crash.log`. If the app cannot start, it shows why instead of closing silently. That includes data saved by a newer version of the app.
+- **Database** (migration 0007):
+  - a bill can never be detached from its client;
+  - five indexes are added for reports and refunds.
+- **CI** now checks every SQL statement and 30 database-protection rules on every build.
+
+### Screens
+- **Merged clients** show a banner and no New bill button, and inactive clients have no New bill button.
+- **Dashboard:** the sales split explains what it counts.
+- **Remove buttons** are named for screen readers.
+- **Settings:** fields reject numbers that are too large.
+- **Load more** restarts when filters change.
+
+### Correction to earlier notes
+- The v0.2.0 note "recovers from an internal panic" applies to development builds only. Installed (release) builds stop on an internal error by design, and now record why in `logs/crash.log`.
+
+## v0.4.0 (2026-09-27): simple inventory
 
 - **Inventory menu:** one **Inventory** screen with **Add Inventory**, **Update** and **Delete**.
 - **Add Inventory:** one form per delivery. The fields are pharma/vendor, product, product type, MRP, clinic bought price (both incl. GST), expiry and quantity. No batch number, HSN, GST breakup or invoice number is asked for. A new vendor or product is created as you type it. The form shows what the product will bill at (for example "MRP ₹100 − 10% = ₹90").

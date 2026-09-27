@@ -189,11 +189,11 @@ SELECT * FROM (
     WHERE (:product_id IS NULL OR p.id = :product_id)
       AND (:category_id IS NULL OR p.category_id = :category_id)
       AND (:active_only = 0 OR p.is_active = 1)
-      AND (:text = '' OR p.name LIKE :like OR p.generic_name LIKE :like OR p.sku LIKE :like
-           OR p.manufacturer LIKE :like
-           OR EXISTS (SELECT 1 FROM inventory_batch b WHERE b.product_id = p.id AND b.batch_no LIKE :like)
+      AND (:text = '' OR p.name LIKE :like ESCAPE '!' OR p.generic_name LIKE :like ESCAPE '!' OR p.sku LIKE :like ESCAPE '!'
+           OR p.manufacturer LIKE :like ESCAPE '!'
+           OR EXISTS (SELECT 1 FROM inventory_batch b WHERE b.product_id = p.id AND b.batch_no LIKE :like ESCAPE '!')
            OR EXISTS (SELECT 1 FROM inventory_batch b JOIN supplier s ON s.id = b.supplier_id
-                      WHERE b.product_id = p.id AND s.name LIKE :like))
+                      WHERE b.product_id = p.id AND s.name LIKE :like ESCAPE '!'))
 )
 WHERE :stock = 'ALL'
    OR (:stock = 'LOW' AND sellable_qty > 0 AND sellable_qty <= min_stock)
@@ -228,9 +228,17 @@ fn product_from_row(r: &Row<'_>) -> rusqlite::Result<ProductRow> {
     })
 }
 
-/// `%text%` for LIKE, with LIKE wildcards in the user's text escaped away.
+/// `%text%` for `LIKE ... ESCAPE '!'`: the user's `%`, `_` and `!` match themselves, so a
+/// name like "Tretinoin 0.025%" is found as typed.
 pub fn like_pattern(text: &str) -> String {
-    format!("%{}%", text.trim().replace(['%', '_'], " "))
+    let mut escaped = String::with_capacity(text.len() + 2);
+    for c in text.trim().chars() {
+        if matches!(c, '!' | '%' | '_') {
+            escaped.push('!');
+        }
+        escaped.push(c);
+    }
+    format!("%{escaped}%")
 }
 
 pub fn query_products(conn: &Connection, q: &ProductQuery<'_>) -> rusqlite::Result<Vec<ProductRow>> {
@@ -319,6 +327,20 @@ pub fn update_product_prices(conn: &Connection, id: i64, mrp: i64, purchase: i64
         "UPDATE product SET default_selling_price_paise = ?2, default_purchase_price_paise = ?3, updated_at = ?4 WHERE id = ?1",
         params![id, mrp, purchase, now],
     )
+}
+
+/// The product with exactly this name (any case), preferring an active one.
+pub fn find_product_id_by_name(conn: &Connection, name: &str) -> rusqlite::Result<Option<i64>> {
+    conn.query_row("SELECT id FROM product WHERE name = ?1 ORDER BY is_active DESC, id LIMIT 1", [name], |r| r.get(0)).optional()
+}
+
+/// Stock already received for this Add Inventory request (a double-click or retry).
+pub fn find_batch_by_request_key(conn: &Connection, key: &str) -> rusqlite::Result<Option<i64>> {
+    conn.query_row("SELECT id FROM inventory_batch WHERE request_key = ?1", [key], |r| r.get(0)).optional()
+}
+
+pub fn set_batch_request_key(conn: &Connection, batch_id: i64, key: &str) -> rusqlite::Result<usize> {
+    conn.execute("UPDATE inventory_batch SET request_key = ?2 WHERE id = ?1", params![batch_id, key])
 }
 
 pub fn count_active_products(conn: &Connection) -> rusqlite::Result<i64> {

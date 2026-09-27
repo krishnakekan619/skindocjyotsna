@@ -32,6 +32,9 @@ pub struct SystemInfo {
     backup_dir: String,
     export_dir: String,
     log_dir: String,
+    /// Second backup copy (`skindocjyotsnaBackup`) and how many backups it holds.
+    mirror_dir: String,
+    mirror_backups: usize,
     database: DatabaseStatusDto,
 }
 
@@ -49,6 +52,8 @@ pub fn get_system_info(state: State<'_, AppState>) -> Result<SystemInfo, Command
         backup_dir: paths.backup_dir.display().to_string(),
         export_dir: paths.export_dir.display().to_string(),
         log_dir: paths.log_dir.display().to_string(),
+        mirror_dir: paths.mirror_dir.display().to_string(),
+        mirror_backups: clinic_sqlite::list_backups(&paths.mirror_dir).map(|files| files.len()).unwrap_or(0),
         database: DatabaseStatusDto {
             sqlite_version: status.sqlite_version,
             schema_version: status.schema_version,
@@ -101,6 +106,7 @@ pub fn create_backup(state: State<'_, AppState>) -> Result<BackupDto, CommandErr
     let session = state.session(Permission::ManageBackups)?;
     let file = maintenance::backup_now(&mut *state.db()?, &session, &state.paths.backup_dir, &state.app_version, now())?;
     tracing::info!(file = %file.file_name, "manual backup created");
+    crate::mirror::copy_backup(&file, &state.paths.mirror_dir);
     Ok(file.into())
 }
 
@@ -126,13 +132,16 @@ fn backup_path(dir: &std::path::Path, file_name: &str) -> Result<PathBuf, Comman
 /// Restores a backup from the backups folder (by file name only). Everyone is signed out
 /// afterwards, because the restored data may have different accounts.
 #[tauri::command(async)]
-pub fn restore_backup(state: State<'_, AppState>, file_name: String) -> Result<RestoreResultDto, CommandError> {
+pub fn restore_backup(state: State<'_, AppState>, file_name: String, password: String) -> Result<RestoreResultDto, CommandError> {
     let session = state.session(Permission::ManageBackups)?;
     let path = backup_path(&state.paths.backup_dir, &file_name)?;
+    // Replacing all data needs the administrator's password again (design §D22).
+    clinic_services::auth::confirm_password(&mut *state.db()?, &session, &password, now())?;
     let result = maintenance::restore(&mut *state.db()?, &session, &path, &state.paths.backup_dir, &state.app_version, now());
     // Sign out even if the restore failed part-way: the data may already have been swapped.
     state.sign_out()?;
     let outcome = result?;
+    crate::mirror::copy_backup(&outcome.safety_backup, &state.paths.mirror_dir);
     tracing::warn!(from = %outcome.restored_from.file_name, by = %session.username, "database restored from backup");
     Ok(RestoreResultDto { restored_from: outcome.restored_from.into(), safety_backup: outcome.safety_backup.into() })
 }
@@ -147,6 +156,10 @@ pub fn open_folder(state: State<'_, AppState>, folder: String) -> Result<(), Com
         "exports" => &paths.export_dir,
         "data" => &paths.data_dir,
         "logs" => &paths.log_dir,
+        "mirror" => {
+            std::fs::create_dir_all(&paths.mirror_dir).map_err(|_| CommandError::user("OPEN_FAILED", "The folder could not be opened."))?;
+            &paths.mirror_dir
+        }
         _ => return Err(CommandError::user("NOT_FOUND", "Unknown folder.")),
     };
     tauri_plugin_opener::open_path(dir, None::<&str>).map_err(|error| {

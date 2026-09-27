@@ -137,7 +137,7 @@ const fromCatalog = (service: ServiceRow): ServiceLine => ({
  * right here and saved with the bill (DEC-034). All amounts are worked out in Rust.
  */
 export function NewBillPage({ initialClientId, correcting }: { initialClientId?: number | undefined; correcting?: BillDetail | undefined }) {
-  const { navigate } = useApp();
+  const { navigate, status } = useApp();
   const [billKey, setBillKey] = useState(newBillKey);
   // Client: an existing one, or a new one typed here (name + mobile), saved at Finalize.
   const [client, setClient] = useState<ClientRow | null>(null);
@@ -169,12 +169,13 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
   const [receivedText, setReceivedText] = useState('');
   const [note, setNote] = useState('');
   const [reason, setReason] = useState('');
-  const [quote, setQuote] = useState<Quote | null>(null);
+  // The quote and the exact bill it was worked out for: Finalize waits until they match.
+  const [quoted, setQuoted] = useState<{ quote: Quote; key: string } | null>(null);
   const [quoteError, setQuoteError] = useState<unknown>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const [approval, setApproval] = useState<{ username: string; password: string } | null>(null);
-  const [needApproval, setNeedApproval] = useState(false);
+  const [needApproval, setNeedApproval] = useState<{ print: boolean } | null>(null);
   const [approvalMessage, setApprovalMessage] = useState('');
   const [confirmClear, setConfirmClear] = useState(false);
   const [done, setDone] = useState<{ detail: BillDetail; print: boolean } | null>(null);
@@ -182,6 +183,8 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
   const phoneInput = useRef<HTMLInputElement | null>(null);
   const productInput = useRef<HTMLInputElement | null>(null);
   const qtyInput = useRef<HTMLInputElement | null>(null);
+  // Set at once on Finalize (state updates later): a held Ctrl+Enter or F9 sends one request.
+  const submitting = useRef(false);
 
   // Catalog, clinic settings, recent clients and recent products: loaded once.
   const loadShortcuts = useCallback(() => {
@@ -209,8 +212,19 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
       setClientOptions([]);
       return;
     }
-    const timer = window.setTimeout(() => api.searchClients(clientText, false).then((rows) => setClientOptions(rows.slice(0, 8))).catch(() => undefined), 200);
-    return () => window.clearTimeout(timer);
+    let current = true;
+    const timer = window.setTimeout(
+      () =>
+        api
+          .searchClients(clientText, false)
+          .then((rows) => current && setClientOptions(rows.slice(0, 8)))
+          .catch(() => undefined),
+      200,
+    );
+    return () => {
+      current = false;
+      window.clearTimeout(timer);
+    };
   }, [clientText, client]);
   // A new client being typed: is this person already a client (same phone or same name)?
   useEffect(() => {
@@ -218,23 +232,38 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
       setMatches([]);
       return;
     }
+    let current = true;
     const timer = window.setTimeout(
       () =>
         api
           .checkClientDuplicates({ fullName: clientText, phone: newPhone, dateOfBirth: null, excludeId: null })
-          .then((found) => setMatches(found.filter((m) => m.strong)))
+          .then((found) => current && setMatches(found.filter((m) => m.strong)))
           .catch(() => undefined),
       400,
     );
-    return () => window.clearTimeout(timer);
+    return () => {
+      current = false;
+      window.clearTimeout(timer);
+    };
   }, [clientText, newPhone, client]);
   useEffect(() => {
     if (!productText.trim()) {
       setProductOptions([]);
       return;
     }
-    const timer = window.setTimeout(() => api.searchProductsForSale(productText).then(setProductOptions).catch(() => undefined), 150);
-    return () => window.clearTimeout(timer);
+    let current = true;
+    const timer = window.setTimeout(
+      () =>
+        api
+          .searchProductsForSale(productText)
+          .then((rows) => current && setProductOptions(rows))
+          .catch(() => undefined),
+      150,
+    );
+    return () => {
+      current = false;
+      window.clearTimeout(timer);
+    };
   }, [productText]);
 
   const lineInputs: BillLineInput[] = useMemo(
@@ -243,40 +272,49 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
   );
   const hasProducts = lineInputs.some((l) => l.qty > 0);
   const standardOn = useStandard && standardPercent > 0;
-  const discount: Discount | null = standardOn ? { kind: 'PERCENT', value: standardPercent * 100 } : discountOf(discountKind, discountText);
+  // No medicines, no discount (it applies to medicines only): never send a hidden one.
+  const discount: Discount | null = !hasProducts
+    ? { kind: 'NONE' }
+    : standardOn
+      ? { kind: 'PERCENT', value: standardPercent * 100 }
+      : discountOf(discountKind, discountText);
   const servicesValid = serviceLines.every((s) => s.qty > 0 && s.price.trim() !== '' && parseRupees(s.price) !== null);
   const serviceInputs: ServiceLineInput[] = useMemo(
     () =>
       serviceLines.map((s) => {
         const paise = parseRupees(s.price || '0');
+        // Always the amount on screen, so a list price changed meanwhile never alters this bill.
         return s.serviceId !== null
-          ? { serviceId: s.serviceId, kind: null, name: null, qty: s.qty, unitPricePaise: paise === null || paise === s.defaultPricePaise ? null : paise }
+          ? { serviceId: s.serviceId, kind: null, name: null, qty: s.qty, unitPricePaise: paise }
           : { serviceId: null, kind: s.kind, name: s.name, qty: s.qty, unitPricePaise: paise };
       }),
     [serviceLines],
   );
   const itemCount = lineInputs.length + serviceInputs.length;
+  const quoteKey = JSON.stringify([lineInputs, serviceInputs, discount, correcting?.bill.id ?? null]);
+  const quote = quoted && quoted.key === quoteKey ? quoted.quote : null;
 
   // All money arithmetic happens in Rust: the screen asks for a quote whenever the bill changes.
   useEffect(() => {
     if (itemCount === 0 || discount === null || !servicesValid) {
-      setQuote(null);
+      setQuoted(null);
       setQuoteError(null);
       return;
     }
+    const key = quoteKey;
     let current = true;
     const timer = window.setTimeout(() => {
       api
         .quoteBill(lineInputs, serviceInputs, discount, correcting?.bill.id ?? null)
         .then((q) => {
           if (current) {
-            setQuote(q);
+            setQuoted({ quote: q, key });
             setQuoteError(null);
           }
         })
         .catch((e: unknown) => {
           if (current) {
-            setQuote(null);
+            setQuoted(null);
             setQuoteError(e);
           }
         });
@@ -286,7 +324,7 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
       window.clearTimeout(timer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [lineInputs, serviceInputs, discountKind, discountText, standardOn, standardPercent, correcting, servicesValid]);
+  }, [quoteKey]);
 
   const total = quote?.totalPaise ?? 0;
   const paymentDrafts: PaymentDraft[] = split ? payments : [{ method: payments[0]?.method ?? 'CASH', reference: payments[0]?.reference ?? '', amount: paiseToInput(total) }];
@@ -300,6 +338,8 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
 
   // ---- Client ----
   const typingNewClient = !client && clientText.trim().length >= 2;
+  // A number typed in the name box (searching by phone): not a name for a new client.
+  const nameIsNumber = typingNewClient && /^[+\d\s()-]+$/.test(clientText.trim());
   const duplicateBlocks = typingNewClient && matches.length > 0 && !allowDuplicate;
   const selectClient = (c: ClientRow) => {
     setClient(c);
@@ -379,20 +419,23 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
     quote !== null &&
     paymentsOk &&
     !duplicateBlocks &&
+    !nameIsNumber &&
+    !(!client && clientText.trim().length === 1) &&
     (!correcting || reason.trim().length >= 3) &&
     (changePaise === null || changePaise >= 0);
-  const dialogOpen = partial !== null || needApproval || confirmClear || done !== null;
+  const dialogOpen = partial !== null || needApproval !== null || confirmClear || done !== null;
 
   const finalize = useCallback(
     async (withApproval: { username: string; password: string } | null, print: boolean) => {
-      if (busy || itemCount === 0 || !quote || discount === null) return;
+      if (submitting.current || busy || itemCount === 0 || !quote || discount === null) return;
+      submitting.current = true;
       setBusy(true); // disables Finalize at once: a double-click cannot submit twice (D10)
       setError(null);
       const input: BillInput = {
         idempotencyKey: billKey,
         clientId: client?.id ?? null,
         // Typed on the bill and not picked from the list: saved together with this bill.
-        newClient: !client && clientText.trim() ? { fullName: clientText.trim(), phone: newPhone.trim(), allowDuplicate } : null,
+        newClient: typingNewClient && !nameIsNumber ? { fullName: clientText.trim(), phone: newPhone.trim(), allowDuplicate } : null,
         lines: lineInputs,
         services: serviceInputs,
         discount,
@@ -405,15 +448,25 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
         const saved = correcting ? await api.correctBill({ originalBillId: correcting.bill.id, reason, bill: input }) : await api.finalizeBill(input);
         setDone({ detail: saved, print });
         reset();
-        setNeedApproval(false);
+        setNeedApproval(null);
         loadShortcuts();
       } catch (e) {
         if (isCommandError(e) && (e.code === 'DISCOUNT_APPROVAL_REQUIRED' || e.field === 'approval')) {
           setApproval(null);
           setApprovalMessage(e.message);
-          setNeedApproval(true);
-        } else setError(e);
+          setNeedApproval({ print });
+        } else {
+          setError(e);
+          // Someone with this name or phone exists: show the "Use / different person" choice now.
+          if (isCommandError(e) && e.code === 'POSSIBLE_DUPLICATE') {
+            api
+              .checkClientDuplicates({ fullName: clientText, phone: newPhone, dateOfBirth: null, excludeId: null })
+              .then((found) => setMatches(found.filter((m) => m.strong)))
+              .catch(() => undefined);
+          }
+        }
       } finally {
+        submitting.current = false;
         setBusy(false);
       }
     },
@@ -424,6 +477,7 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
   // F2: client search, F4: product search, Ctrl/Cmd+Enter (or F9): finalize & print.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (status.locked) return;
       if (e.key === 'F2') {
         e.preventDefault();
         clientInput.current?.focus();
@@ -437,7 +491,7 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [finalize, approval, canFinalize, dialogOpen]);
+  }, [finalize, approval, canFinalize, dialogOpen, status.locked]);
 
   const quoteFor = (productId: number) => quote?.lines.filter((q) => q.productId === productId) ?? [];
 
@@ -520,7 +574,26 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
                     />
                   )}
                 </Stack>
-                {typingNewClient && matches.length === 0 && <Typography color="text.secondary">{t.billing.newClientNote(clientText.trim())}</Typography>}
+                {nameIsNumber && (
+                  <Alert
+                    severity="warning"
+                    action={
+                      <Button
+                        color="inherit"
+                        onClick={() => {
+                          setNewPhone(clientText.trim());
+                          setClientText('');
+                          window.setTimeout(() => clientInput.current?.focus(), 0);
+                        }}
+                      >
+                        {t.billing.useAsMobile}
+                      </Button>
+                    }
+                  >
+                    {t.billing.nameIsNumber}
+                  </Alert>
+                )}
+                {typingNewClient && !nameIsNumber && matches.length === 0 && <Typography color="text.secondary">{t.billing.newClientNote(clientText.trim())}</Typography>}
                 {typingNewClient && matches.length > 0 && (
                   <Alert severity={allowDuplicate ? 'info' : 'warning'}>
                     <Stack spacing={1}>
@@ -674,7 +747,7 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
                           slotProps={{ htmlInput: { inputMode: 'numeric', style: { textAlign: 'right' } } }}
                         />
                         <Typography sx={{ minWidth: 100, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{rupees(net)}</Typography>
-                        <IconButton aria-label="remove" onClick={() => setLines((c) => c.filter((l) => l !== line))}>
+                        <IconButton aria-label={t.billing.removeLine(line.product.name)} onClick={() => setLines((c) => c.filter((l) => l !== line))}>
                           ✕
                         </IconButton>
                       </Stack>
@@ -847,11 +920,12 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
       {needApproval && (
         <ApprovalDialog
           message={approvalMessage}
-          onCancel={() => setNeedApproval(false)}
+          onCancel={() => setNeedApproval(null)}
           onApprove={(credentials) => {
+            const print = needApproval.print;
             setApproval(credentials);
-            setNeedApproval(false);
-            void finalize(credentials, true);
+            setNeedApproval(null);
+            void finalize(credentials, print);
           }}
         />
       )}
@@ -985,7 +1059,7 @@ function ServiceRows({
               sx={{ width: 130 }}
             />
             <Typography sx={{ minWidth: 100, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{paise === null ? '—' : rupees(paise * line.qty)}</Typography>
-            <IconButton aria-label="remove" onClick={() => onRemove(line.key)}>
+            <IconButton aria-label={t.billing.removeLine(line.name)} onClick={() => onRemove(line.key)}>
               ✕
             </IconButton>
           </Stack>
@@ -1009,7 +1083,21 @@ function ApprovalDialog({ message, onApprove, onCancel }: { message: string; onA
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   return (
-    <Dialog open onClose={onCancel} maxWidth="xs" fullWidth>
+    <Dialog
+      open
+      onClose={onCancel}
+      maxWidth="xs"
+      fullWidth
+      slotProps={{
+        paper: {
+          component: 'form',
+          onSubmit: (e: React.FormEvent) => {
+            e.preventDefault();
+            if (username && password) onApprove({ username, password });
+          },
+        },
+      }}
+    >
       <DialogTitle>{t.billing.approvalTitle}</DialogTitle>
       <DialogContent>
         <Stack spacing={2} sx={{ pt: 1 }}>
@@ -1020,7 +1108,7 @@ function ApprovalDialog({ message, onApprove, onCancel }: { message: string; onA
       </DialogContent>
       <DialogActions>
         <Button onClick={onCancel}>{t.common.cancel}</Button>
-        <Button variant="contained" disabled={!username || !password} onClick={() => onApprove({ username, password })}>
+        <Button type="submit" variant="contained" disabled={!username || !password}>
           {t.billing.approve}
         </Button>
       </DialogActions>

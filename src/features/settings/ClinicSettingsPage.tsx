@@ -6,7 +6,7 @@ import { ErrorAlert, FormGrid, Loading, PageHeader, useLoader } from '../../comp
 import { t } from '../../i18n/en';
 
 /** Whole non-negative number (the backend fields are unsigned). */
-const whole = (text: string) => Number.parseInt(text.replace(/\D/g, '') || '0', 10);
+const whole = (text: string) => Number.parseInt(text.replace(/\D/g, '').slice(0, 5) || '0', 10);
 /** Whole number that may be negative (UTC offset); a lone "-" counts as 0. */
 const signed = (text: string) => {
   const n = Number.parseInt(text.replace(/[^\d-]/g, ''), 10);

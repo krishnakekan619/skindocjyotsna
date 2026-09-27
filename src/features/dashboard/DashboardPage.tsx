@@ -170,7 +170,12 @@ export function DashboardPage() {
         <Card variant="outlined">
           <CardContent>
             <Stack direction="row" sx={{ alignItems: 'center', justifyContent: 'space-between', mb: 2, flexWrap: 'wrap', gap: 1 }}>
-              <Typography variant="h6">{t.dashboard.salesSplit}</Typography>
+              <Box>
+                <Typography variant="h6">{t.dashboard.salesSplit}</Typography>
+                <Typography variant="body2" color="text.secondary">
+                  {t.dashboard.salesSplitNote}
+                </Typography>
+              </Box>
               <ToggleButtonGroup size="small" exclusive value={period} onChange={(_, v: Period | null) => v && setPeriod(v)}>
                 <ToggleButton value="today">{t.dashboard.periods.today}</ToggleButton>
                 <ToggleButton value="week">{t.dashboard.periods.week}</ToggleButton>

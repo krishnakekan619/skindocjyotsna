@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Box, Button, Card, CardContent, Divider, Stack, TextField, Typography } from '@mui/material';
+import { Alert, Box, Button, Card, CardContent, Divider, Stack, TextField, Typography } from '@mui/material';
 import { api } from '../../api';
 import { useApp } from '../../app/AppContext';
 import { EmptyState, ErrorAlert, Loading, PageHeader, useLoader } from '../../components/common';
@@ -34,13 +34,27 @@ export function ClientProfilePage({ clientId }: { clientId: number }) {
             <Button variant="outlined" onClick={() => setEditing(true)}>
               {t.common.edit}
             </Button>
-            <Button variant="contained" onClick={() => navigate({ name: 'newBill', clientId: c.id })}>
-              {t.clients.newBill}
-            </Button>
+            {c.isActive && c.mergedIntoClientId === null && (
+              <Button variant="contained" onClick={() => navigate({ name: 'newBill', clientId: c.id })}>
+                {t.clients.newBill}
+              </Button>
+            )}
           </>
         }
       />
       <Stack spacing={2}>
+        {c.mergedIntoClientId !== null && (
+          <Alert
+            severity="info"
+            action={
+              <Button color="inherit" onClick={() => navigate({ name: 'client', clientId: c.mergedIntoClientId ?? c.id })}>
+                {t.common.open}
+              </Button>
+            }
+          >
+            {t.clients.mergedInto}
+          </Alert>
+        )}
         <Typography color="text.secondary">
           {t.clients.totalVisits}: {data.visitCount} · {t.clients.totalBills}: {data.billCount} · {t.clients.lastVisit}: {formatDateTime(c.lastVisitAt)} · {t.clients.totalSpent}:{' '}
           {rupees(data.totalSpentPaise)}

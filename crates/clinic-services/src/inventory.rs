@@ -355,6 +355,9 @@ pub struct AddInventoryInput {
     pub purchase_price_paise: i64,
     pub expiry_date: Option<String>,
     pub qty: i64,
+    /// Made once per form by the screen: a double-click or retry adds the stock only once.
+    #[serde(default)]
+    pub request_key: Option<String>,
 }
 
 pub fn add_inventory(db: &mut Database, actor: &Session, input: AddInventoryInput, now: i64) -> Result<BatchRow, ServiceError> {
@@ -369,8 +372,17 @@ pub fn add_inventory(db: &mut Database, actor: &Session, input: AddInventoryInpu
         return Err(invalid("purchasePricePaise", "Bought price must be between ₹0 and ₹10,00,000."));
     }
     let expiry = parse_expiry(input.expiry_date.as_deref())?.ok_or_else(|| invalid("expiryDate", "Expiry date is required."))?;
+    let request_key = input.request_key.as_deref().map(str::trim).filter(|k| !k.is_empty());
+    if request_key.is_some_and(|k| k.len() > 64 || !k.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-')) {
+        return Err(invalid("requestKey", "Invalid request. Please open Add Inventory again."));
+    }
     db.write(|c| {
         verify_actor(c, actor)?;
+        if let Some(key) = request_key {
+            if let Some(batch_id) = repo::find_batch_by_request_key(c, key)? {
+                return repo::find_batch(c, batch_id)?.ok_or(ServiceError::NotFound("batch"));
+            }
+        }
         let (_, today) = clinic_today(c, now)?;
         if expiry < today {
             return Err(invalid("expiryDate", "This stock has already expired; it cannot be added."));
@@ -402,12 +414,11 @@ pub fn add_inventory(db: &mut Database, actor: &Session, input: AddInventoryInpu
                 if name.is_empty() || chars(name) > 120 {
                     return Err(invalid("productName", "Product name is required (at most 120 characters)."));
                 }
-                let same_name = repo::query_products(
-                    c,
-                    &ProductQuery { text: name, category_id: None, active_only: false, stock: "ALL", product_id: None, today: &today_text, limit: 50 },
-                )?
-                .into_iter()
-                .find(|p| p.name.to_lowercase() == name.to_lowercase());
+                // Exact name (any case), active first: "Tretinoin 0.025%" is found as typed.
+                let same_name = match repo::find_product_id_by_name(c, name)? {
+                    Some(id) => repo::find_product(c, id, &today_text)?,
+                    None => None,
+                };
                 match same_name {
                     Some(existing) => (existing, false),
                     None => {
@@ -448,7 +459,13 @@ pub fn add_inventory(db: &mut Database, actor: &Session, input: AddInventoryInpu
         if !is_new && actor.role.allows(Permission::ManageInventory) {
             repo::update_product_prices(c, product.id, input.mrp_paise, input.purchase_price_paise, now)?;
         }
-        let lot_no = format!("LOT-{:06}", next_number(c, "LOT", "ALL")?);
+        // Skip numbers already used by a hand-typed batch number, or this product would be stuck.
+        let lot_no = loop {
+            let candidate = format!("LOT-{:06}", next_number(c, "LOT", "ALL")?);
+            if repo::find_batch_by_no(c, product.id, &candidate)?.is_none() {
+                break candidate;
+            }
+        };
         let expiry_text = expiry.to_string();
         let batch_id = repo::insert_batch(
             c,
@@ -464,6 +481,9 @@ pub fn add_inventory(db: &mut Database, actor: &Session, input: AddInventoryInpu
         )?;
         repo::apply_movement(c, &Movement { batch_id, kind: "PURCHASE", qty_change: input.qty, reason: "Stock received", bill_id: None, sales_return_id: None, user_id: actor.user_id, now })?
             .ok_or_else(|| ServiceError::Corrupt("add inventory failed".into()))?;
+        if let Some(key) = request_key {
+            repo::set_batch_request_key(c, batch_id, key)?;
+        }
         audit::record(c, now, Actor::from(actor), "STOCK_IN", Some(("batch", batch_id.to_string())), Some(json!({ "product": product.sku, "lot": lot_no, "qty": input.qty, "mrp": input.mrp_paise })))?;
         repo::find_batch(c, batch_id)?.ok_or(ServiceError::NotFound("batch"))
     })

@@ -85,6 +85,13 @@ jobs:
       - name: Check locks (stable releases, checksums)
         run: node scripts/check-locks.mjs
 
+      # Every SQL statement prepares against the real schema, and the protective triggers hold
+      # (Node's built-in SQLite: no Rust needed).
+      - name: Database checks (SQL and triggers)
+        run: |
+          node --no-warnings scripts/dev/check-sql.mjs
+          node --no-warnings scripts/dev/check-triggers.mjs
+
       - name: Typecheck
         run: npm run typecheck
 

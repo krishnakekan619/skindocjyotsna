@@ -355,7 +355,7 @@ pub fn list_bills(conn: &Connection, q: &BillQuery<'_>) -> rusqlite::Result<Vec<
         "{BILL_SELECT}
          WHERE (:from IS NULL OR b.finalized_at >= :from) AND (:to IS NULL OR b.finalized_at < :to)
            AND (:status IS NULL OR b.status = :status) AND (:client_id IS NULL OR b.client_id = :client_id)
-           AND (:text = '' OR b.bill_no LIKE :like OR c.full_name LIKE :like)
+           AND (:text = '' OR b.bill_no LIKE :like ESCAPE '!' OR c.full_name LIKE :like ESCAPE '!')
          ORDER BY b.finalized_at DESC, b.id DESC LIMIT :limit"
     ))?;
     let text = q.text.trim();

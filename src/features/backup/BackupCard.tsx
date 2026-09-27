@@ -74,10 +74,10 @@ export function BackupCard({ onRestored }: { onRestored?: (() => void) | undefin
 
   const backUpNow = () => run(async () => `Backup saved: ${(await api.createBackup()).fileName}`);
 
-  const restore = (file: BackupFile) => {
+  const restore = (file: BackupFile, password: string) => {
     setRestoreTarget(null);
     return run(async () => {
-      const result = await api.restoreBackup(file.fileName);
+      const result = await api.restoreBackup(file.fileName, password);
       setRestored(true);
       if (onRestored) window.setTimeout(onRestored, 3000);
       return `Restored ${result.restoredFrom.fileName}. The previous data was saved first as ${result.safetyBackup.fileName}.`;
@@ -135,14 +135,15 @@ export function BackupCard({ onRestored }: { onRestored?: (() => void) | undefin
         </Stack>
       </CardContent>
       {restoreTarget && (
-        <RestoreDialog file={restoreTarget} onCancel={() => setRestoreTarget(null)} onConfirm={() => restore(restoreTarget)} />
+        <RestoreDialog file={restoreTarget} onCancel={() => setRestoreTarget(null)} onConfirm={(password) => restore(restoreTarget, password)} />
       )}
     </Card>
   );
 }
 
-function RestoreDialog({ file, onCancel, onConfirm }: { file: BackupFile; onCancel: () => void; onConfirm: () => void }) {
+function RestoreDialog({ file, onCancel, onConfirm }: { file: BackupFile; onCancel: () => void; onConfirm: (password: string) => void }) {
   const [typed, setTyped] = useState('');
+  const [password, setPassword] = useState('');
   return (
     <Dialog open onClose={onCancel} maxWidth="xs" fullWidth>
       <DialogTitle>Restore this backup?</DialogTitle>
@@ -159,11 +160,12 @@ function RestoreDialog({ file, onCancel, onConfirm }: { file: BackupFile; onCanc
             value={typed}
             onChange={(event) => setTyped(event.target.value)}
           />
+          <TextField label="Your password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} />
         </Stack>
       </DialogContent>
       <DialogActions>
         <Button onClick={onCancel}>Cancel</Button>
-        <Button color="error" variant="contained" disabled={typed.trim().toUpperCase() !== CONFIRM_WORD} onClick={onConfirm}>
+        <Button color="error" variant="contained" disabled={typed.trim().toUpperCase() !== CONFIRM_WORD || !password} onClick={() => onConfirm(password)}>
           Restore
         </Button>
       </DialogActions>

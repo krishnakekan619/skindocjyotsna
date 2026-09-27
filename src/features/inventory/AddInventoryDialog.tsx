@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Alert, Autocomplete, Button, Dialog, DialogActions, DialogContent, DialogTitle, MenuItem, Stack, TextField, Typography } from '@mui/material';
 import { api, errorField, type BatchRow, type Category, type ProductRow, type Supplier } from '../../api';
 import { ErrorAlert, FormGrid } from '../../components/common';
 import { t } from '../../i18n/en';
+import { newBillKey } from '../../lib/dates';
 import { paiseToInput, parseRupees, rupees } from '../../lib/money';
 
 /**
@@ -32,6 +33,9 @@ export function AddInventoryDialog({
   const [qty, setQty] = useState('');
   const [standardPercent, setStandardPercent] = useState(0);
   const [busy, setBusy] = useState(false);
+  // One key per form: a double-click or retry adds the stock once (the backend checks it).
+  const [requestKey] = useState(newBillKey);
+  const sending = useRef(false);
   const [error, setError] = useState<unknown>(null);
   const field = errorField(error);
 
@@ -65,7 +69,7 @@ export function AddInventoryDialog({
   const vendorName = vendor ? vendor.name : vendorText.trim();
   const ready =
     vendorName.length > 0 &&
-    (product !== null || (newProduct && typeId !== '')) &&
+    (product !== null || newProduct) &&
     mrpPaise !== null &&
     mrpPaise > 0 &&
     boughtPaise !== null &&
@@ -75,7 +79,8 @@ export function AddInventoryDialog({
   const sellingPaise = mrpPaise !== null ? Math.round((mrpPaise * (100 - standardPercent)) / 100) : null;
 
   const save = async () => {
-    if (!ready || mrpPaise === null || boughtPaise === null) return;
+    if (sending.current || !ready || mrpPaise === null || boughtPaise === null) return;
+    sending.current = true;
     setBusy(true);
     setError(null);
     try {
@@ -90,11 +95,13 @@ export function AddInventoryDialog({
           purchasePricePaise: boughtPaise,
           expiryDate: expiry,
           qty: qtyValue,
+          requestKey,
         }),
       );
     } catch (e) {
       setError(e);
     } finally {
+      sending.current = false;
       setBusy(false);
     }
   };
@@ -168,7 +175,8 @@ export function AddInventoryDialog({
             )}
           />
           {newProduct && (
-            <TextField select label={t.products.productType} value={typeId} onChange={(e) => setTypeId(e.target.value === '' ? '' : Number(e.target.value))} required>
+            <TextField select label={t.products.productType} value={typeId} onChange={(e) => setTypeId(e.target.value === '' ? '' : Number(e.target.value))}>
+              <MenuItem value="">{t.products.noCategory}</MenuItem>
               {types.map((type) => (
                 <MenuItem key={type.id} value={type.id}>
                   {type.name}
