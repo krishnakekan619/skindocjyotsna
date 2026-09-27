@@ -134,9 +134,11 @@ export interface ProductRow {
   totalQty: number;
   sellableQty: number;
   nextExpiry: IsoDate | null;
+  /** Vendor of the most recent stock received. */
+  lastVendor: string | null;
 }
 
-export type ProductInput = Omit<ProductRow, 'id' | 'categoryName' | 'createdAt' | 'updatedAt' | 'totalQty' | 'sellableQty' | 'nextExpiry'> & {
+export type ProductInput = Omit<ProductRow, 'id' | 'categoryName' | 'createdAt' | 'updatedAt' | 'totalQty' | 'sellableQty' | 'nextExpiry' | 'lastVendor'> & {
   id: number | null;
 };
 
@@ -147,6 +149,26 @@ export interface ProductFilter {
   categoryId?: number | null;
   includeInactive?: boolean;
   stock?: StockFilter;
+  /** Rows to load ("Load more" asks for more). */
+  limit?: number;
+}
+
+/** inventory::AddInventoryInput: the one-screen stock form. */
+export interface AddInventoryInput {
+  productId: number | null;
+  productName: string;
+  typeId: number | null;
+  vendorId: number | null;
+  vendorName: string;
+  mrpPaise: Paise;
+  purchasePricePaise: Paise;
+  expiryDate: IsoDate;
+  qty: number;
+}
+
+export interface DeleteOutcome {
+  deleted: boolean;
+  archived: boolean;
 }
 
 /** repo::inventory::BatchRow */
@@ -523,6 +545,7 @@ export interface BillFilter {
   status?: BillStatus | null;
   clientId?: number | null;
   text?: string;
+  limit?: number;
 }
 
 export interface ReturnInput {
@@ -549,7 +572,10 @@ export interface ReceiptLine {
   name: string;
   detail: string | null;
   qty: number;
+  /** MRP per unit. */
   unitPrice: Paise;
+  /** This line's share of the discount. */
+  discount: Paise;
   amount: Paise;
   notSuppliedQty: number;
   /** "Consultation", "Procedures", "Medicines & Products", or "" (no headings). */

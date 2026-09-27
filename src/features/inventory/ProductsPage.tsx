@@ -22,14 +22,18 @@ import {
 } from '@mui/material';
 import { api, type BatchRow, type ProductRow, type StockFilter } from '../../api';
 import { useApp } from '../../app/AppContext';
-import { EmptyState, ErrorAlert, Loading, PageHeader, StatusChip, useLoader } from '../../components/common';
+import { ConfirmDialog, EmptyState, ErrorAlert, Loading, PageHeader, StatusChip, useLoader } from '../../components/common';
 import { t } from '../../i18n/en';
-import { formatExpiry, todayIso } from '../../lib/dates';
-import { percentLabel, rupees } from '../../lib/money';
+import { addDaysIso, formatExpiry, todayIso } from '../../lib/dates';
+import { rupees } from '../../lib/money';
 import { LedgerTable } from './LedgerPage';
+import { AddInventoryDialog } from './AddInventoryDialog';
 import { ProductDialog } from './ProductDialog';
 import { AdjustDialog, StockInDialog } from './StockDialogs';
 
+const PAGE = 200;
+
+/** Inventory (v0.4 brief): Add Inventory for everyone; Update and Delete for administrators. */
 export function ProductsPage() {
   const { isAdmin, notify } = useApp();
   const [text, setText] = useState('');
@@ -37,21 +41,37 @@ export function ProductsPage() {
   const [stock, setStock] = useState<StockFilter>('ALL');
   const [categoryId, setCategoryId] = useState<number | null>(null);
   const [includeInactive, setIncludeInactive] = useState(false);
-  const [editing, setEditing] = useState<ProductRow | 'new' | null>(null);
-  const [stockIn, setStockIn] = useState<ProductRow | null>(null);
+  const [limit, setLimit] = useState(PAGE);
+  const [editing, setEditing] = useState<ProductRow | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [deleting, setDeleting] = useState<ProductRow | null>(null);
   const [detail, setDetail] = useState<number | null>(null);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => setQuery(text), 250);
+    const timer = window.setTimeout(() => {
+      setQuery(text);
+      setLimit(PAGE);
+    }, 250);
     return () => window.clearTimeout(timer);
   }, [text]);
-  const { data, error, loading, reload } = useLoader(() => api.listProducts({ text: query, categoryId, includeInactive, stock }), [query, categoryId, includeInactive, stock]);
+  const { data, error, loading, reload } = useLoader(
+    () => api.listProducts({ text: query, categoryId, includeInactive, stock, limit }),
+    [query, categoryId, includeInactive, stock, limit],
+  );
   const categories = useLoader(() => api.listCategories(), []);
-  const suppliers = useLoader(() => (isAdmin ? api.listSuppliers() : Promise.resolve([])), [isAdmin]);
+  const suppliers = useLoader(() => api.listSuppliers(), []);
+  const soon = addDaysIso(todayIso(), 30);
 
   return (
     <>
-      <PageHeader title={t.products.title} actions={isAdmin ? <Button variant="contained" onClick={() => setEditing('new')}>{t.products.add}</Button> : undefined} />
+      <PageHeader
+        title={t.products.title}
+        actions={
+          <Button variant="contained" onClick={() => setAdding(true)}>
+            + {t.products.addInventory}
+          </Button>
+        }
+      />
       <Stack direction="row" spacing={2} sx={{ mb: 2, alignItems: 'center', flexWrap: 'wrap' }} useFlexGap>
         <TextField label={t.common.search} placeholder={t.products.searchHint} value={text} onChange={(e) => setText(e.target.value)} autoFocus sx={{ flexGrow: 1, maxWidth: 420 }} />
         <TextField select label={t.products.category} value={categoryId ?? ''} onChange={(e) => setCategoryId(e.target.value === '' ? null : Number(e.target.value))} sx={{ width: 200 }}>
@@ -79,59 +99,90 @@ export function ProductsPage() {
           <Table size="small">
             <TableHead>
               <TableRow>
-                <TableCell>{t.products.sku}</TableCell>
                 <TableCell>{t.products.name}</TableCell>
                 <TableCell>{t.products.category}</TableCell>
-                <TableCell align="right">{t.common.price}</TableCell>
-                <TableCell align="right">{t.products.gst}</TableCell>
+                <TableCell>{t.products.vendor}</TableCell>
+                <TableCell align="right">{t.products.mrp}</TableCell>
+                <TableCell align="right">{t.products.boughtPrice}</TableCell>
                 <TableCell align="right">{t.products.sellable}</TableCell>
-                <TableCell>{t.products.nextExpiry}</TableCell>
+                <TableCell>{t.products.status}</TableCell>
                 <TableCell />
               </TableRow>
             </TableHead>
             <TableBody>
-              {data.map((p) => (
-                <TableRow key={p.id} hover sx={{ cursor: 'pointer' }} onClick={() => setDetail(p.id)}>
-                  <TableCell>{p.sku}</TableCell>
-                  <TableCell>
-                    {p.name}
-                    {p.genericName && <Typography component="span" color="text.secondary"> · {p.genericName}</Typography>} {!p.isActive && <StatusChip label={t.common.inactive} color="default" />}
-                  </TableCell>
-                  <TableCell>{p.categoryName ?? '—'}</TableCell>
-                  <TableCell align="right">{rupees(p.defaultSellingPricePaise)}</TableCell>
-                  <TableCell align="right">{percentLabel(p.gstRateBp)}</TableCell>
-                  <TableCell align="right">
-                    {p.sellableQty === 0 ? (
-                      <StatusChip label={t.products.filterOut} color="error" />
-                    ) : p.sellableQty <= p.minStock ? (
-                      <StatusChip label={`${p.sellableQty}`} color="warning" />
-                    ) : (
-                      p.sellableQty
-                    )}{' '}
-                    {p.unit}
-                  </TableCell>
-                  <TableCell>{formatExpiry(p.nextExpiry)}</TableCell>
-                  <TableCell align="right" onClick={(e) => e.stopPropagation()}>
-                    {isAdmin && (
-                      <Stack direction="row" spacing={1} sx={{ justifyContent: 'flex-end' }}>
-                        <Button size="small" onClick={() => setStockIn(p)}>
-                          {t.products.stockIn}
-                        </Button>
-                        <Button size="small" onClick={() => setEditing(p)}>
-                          {t.common.edit}
-                        </Button>
+              {data.map((p) => {
+                const hasExpired = p.totalQty > p.sellableQty;
+                const expiresSoon = p.nextExpiry !== null && p.nextExpiry <= soon;
+                return (
+                  <TableRow key={p.id} hover sx={{ cursor: 'pointer' }} onClick={() => setDetail(p.id)}>
+                    <TableCell>
+                      {p.name}
+                      {p.genericName && <Typography component="span" color="text.secondary"> · {p.genericName}</Typography>} {!p.isActive && <StatusChip label={t.common.inactive} color="default" />}
+                    </TableCell>
+                    <TableCell>{p.categoryName ?? '—'}</TableCell>
+                    <TableCell>{p.lastVendor ?? '—'}</TableCell>
+                    <TableCell align="right">{rupees(p.defaultSellingPricePaise)}</TableCell>
+                    <TableCell align="right">{rupees(p.defaultPurchasePricePaise)}</TableCell>
+                    <TableCell align="right">
+                      {p.sellableQty === 0 ? (
+                        <StatusChip label={t.products.filterOut} color="error" />
+                      ) : p.sellableQty <= p.minStock ? (
+                        <StatusChip label={`${p.sellableQty}`} color="warning" />
+                      ) : (
+                        p.sellableQty
+                      )}{' '}
+                      {p.unit}
+                    </TableCell>
+                    <TableCell>
+                      <Stack direction="row" spacing={0.5} sx={{ alignItems: 'center', flexWrap: 'wrap' }} useFlexGap>
+                        <span>{formatExpiry(p.nextExpiry)}</span>
+                        {hasExpired && <StatusChip label={t.products.expired} color="error" />}
+                        {expiresSoon && <StatusChip label={t.products.expiresSoon} color="warning" />}
+                        {!hasExpired && !expiresSoon && p.sellableQty > 0 && <StatusChip label={t.products.ok} color="success" />}
                       </Stack>
-                    )}
-                  </TableCell>
-                </TableRow>
-              ))}
+                    </TableCell>
+                    <TableCell align="right" onClick={(e) => e.stopPropagation()}>
+                      {isAdmin && (
+                        <Stack direction="row" spacing={1} sx={{ justifyContent: 'flex-end' }}>
+                          <Button size="small" onClick={() => setEditing(p)}>
+                            {t.products.update}
+                          </Button>
+                          <Button size="small" color="error" onClick={() => setDeleting(p)}>
+                            {t.products.delete}
+                          </Button>
+                        </Stack>
+                      )}
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
             </TableBody>
           </Table>
         )}
       </Card>
+      {data && data.length >= limit && (
+        <Stack direction="row" sx={{ mt: 2, justifyContent: 'center' }}>
+          <Button onClick={() => setLimit(limit + PAGE)} disabled={loading}>
+            {t.products.loadMore}
+          </Button>
+        </Stack>
+      )}
+      {adding && (
+        <AddInventoryDialog
+          suppliers={suppliers.data ?? []}
+          types={(categories.data ?? []).filter((c) => c.isActive)}
+          onClose={() => setAdding(false)}
+          onSaved={(b) => {
+            setAdding(false);
+            notify(t.products.added(b.quantity, b.productName));
+            reload();
+            suppliers.reload();
+          }}
+        />
+      )}
       {editing && (
         <ProductDialog
-          product={editing === 'new' ? null : editing}
+          product={editing}
           categories={categories.data ?? []}
           onClose={() => setEditing(null)}
           onSaved={(p) => {
@@ -141,18 +192,20 @@ export function ProductsPage() {
           }}
         />
       )}
-      {stockIn && (
-        <StockInDialog
-          product={stockIn}
-          suppliers={suppliers.data ?? []}
-          onClose={() => setStockIn(null)}
-          onSaved={(b) => {
-            setStockIn(null);
-            notify(`${b.productName}: +${b.batchNo} ${t.common.saved.toLowerCase()}`);
-            reload();
-          }}
-        />
-      )}
+      <ConfirmDialog
+        open={deleting !== null}
+        title={t.products.deleteTitle(deleting?.name ?? '')}
+        text={t.products.deleteText}
+        confirmLabel={t.products.delete}
+        danger
+        onConfirm={async () => {
+          if (!deleting) return;
+          const outcome = await api.deleteProduct(deleting.id);
+          notify(outcome.deleted ? t.products.deleted(deleting.name) : t.products.archived(deleting.name));
+          reload();
+        }}
+        onClose={() => setDeleting(null)}
+      />
       {detail !== null && <ProductDetailDialog productId={detail} suppliers={suppliers.data ?? []} onClose={() => setDetail(null)} onChanged={reload} />}
     </>
   );

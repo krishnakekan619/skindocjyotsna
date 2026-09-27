@@ -136,6 +136,8 @@ pub struct ProductFilter {
     pub include_inactive: bool,
     /// "ALL" (default), "LOW" or "OUT".
     pub stock: String,
+    /// How many rows ("Load more" asks for more); default 200, at most 5000.
+    pub limit: Option<u32>,
 }
 
 pub fn list_products(db: &Database, actor: &Session, filter: ProductFilter, now: i64) -> Result<Vec<ProductRow>, ServiceError> {
@@ -158,7 +160,7 @@ pub fn list_products(db: &Database, actor: &Session, filter: ProductFilter, now:
                 stock,
                 product_id: None,
                 today: &today,
-                limit: 500,
+                limit: filter.limit.unwrap_or(200).clamp(1, 5_000),
             },
         )?)
     })
@@ -245,6 +247,17 @@ fn validate_product(p: &ProductInput) -> Result<(), ServiceError> {
     Ok(())
 }
 
+/// The next automatic SKU, skipping numbers already taken by a hand-typed SKU (or every later
+/// save would fail).
+fn new_sku(c: &Connection) -> Result<String, ServiceError> {
+    loop {
+        let candidate = format!("P-{:06}", next_number(c, "PRODUCT", "ALL")?);
+        if !repo::sku_taken(c, &candidate, None)? {
+            return Ok(candidate);
+        }
+    }
+}
+
 pub fn save_product(db: &mut Database, actor: &Session, input: ProductInput, now: i64) -> Result<ProductRow, ServiceError> {
     actor.require(Permission::ManageInventory)?;
     validate_product(&input)?;
@@ -258,13 +271,7 @@ pub fn save_product(db: &mut Database, actor: &Session, input: ProductInput, now
         let sku = match input.sku.trim() {
             "" => match input.id {
                 Some(id) => repo::find_product(c, id, "0000-00-00")?.ok_or(ServiceError::NotFound("product"))?.sku,
-                // Skip numbers already taken by a hand-typed SKU, or every later save would fail.
-                None => loop {
-                    let candidate = format!("P-{:06}", next_number(c, "PRODUCT", "ALL")?);
-                    if !repo::sku_taken(c, &candidate, None)? {
-                        break candidate;
-                    }
-                },
+                None => new_sku(c)?,
             },
             given => given.to_uppercase(),
         };
@@ -323,6 +330,178 @@ pub struct StockInInput {
     /// e.g. supplier invoice number.
     #[serde(default)]
     pub note: String,
+}
+
+/// The one-screen Add Inventory form (DEC-036): vendor, product, type, MRP, clinic bought price,
+/// expiry and quantity. A new vendor or product is created on the way; the lot number is made
+/// up automatically (never asked for). The MRP is the price billed before the standard discount.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AddInventoryInput {
+    /// An existing product, or `None` and `product_name` for a new one.
+    #[serde(default)]
+    pub product_id: Option<i64>,
+    #[serde(default)]
+    pub product_name: String,
+    /// Product type (the admin-managed list), for a new product.
+    #[serde(default)]
+    pub type_id: Option<i64>,
+    /// An existing vendor, or `None` and `vendor_name` for a new one.
+    #[serde(default)]
+    pub vendor_id: Option<i64>,
+    #[serde(default)]
+    pub vendor_name: String,
+    pub mrp_paise: i64,
+    pub purchase_price_paise: i64,
+    pub expiry_date: Option<String>,
+    pub qty: i64,
+}
+
+pub fn add_inventory(db: &mut Database, actor: &Session, input: AddInventoryInput, now: i64) -> Result<BatchRow, ServiceError> {
+    actor.require(Permission::AddStock)?;
+    if !(1..=1_000_000).contains(&input.qty) {
+        return Err(invalid("qty", "Quantity must be at least 1."));
+    }
+    if !(1..=100_000_000).contains(&input.mrp_paise) {
+        return Err(invalid("mrpPaise", "MRP must be between ₹0.01 and ₹10,00,000."));
+    }
+    if !(0..=100_000_000).contains(&input.purchase_price_paise) {
+        return Err(invalid("purchasePricePaise", "Bought price must be between ₹0 and ₹10,00,000."));
+    }
+    let expiry = parse_expiry(input.expiry_date.as_deref())?.ok_or_else(|| invalid("expiryDate", "Expiry date is required."))?;
+    db.write(|c| {
+        verify_actor(c, actor)?;
+        let (_, today) = clinic_today(c, now)?;
+        if expiry < today {
+            return Err(invalid("expiryDate", "This stock has already expired; it cannot be added."));
+        }
+        // Vendor: chosen from the list, or typed (found by name, or added).
+        let vendor_id = match input.vendor_id {
+            Some(id) => repo::list_suppliers(c)?.into_iter().find(|s| s.id == id).map(|s| s.id).ok_or(ServiceError::NotFound("vendor"))?,
+            None => {
+                let name = input.vendor_name.trim();
+                if name.is_empty() || chars(name) > 100 {
+                    return Err(invalid("vendorName", "Vendor name is required (at most 100 characters)."));
+                }
+                match repo::list_suppliers(c)?.into_iter().find(|s| s.name.to_lowercase() == name.to_lowercase()) {
+                    Some(existing) => existing.id,
+                    None => {
+                        let id = repo::insert_supplier(c, name, "", "", true)?;
+                        audit::record(c, now, Actor::from(actor), "SUPPLIER_CREATE", Some(("supplier", id.to_string())), Some(json!({ "name": name, "addedWithStock": true })))?;
+                        id
+                    }
+                }
+            }
+        };
+        // Product: chosen from the list, or typed (found by name, or added with its type).
+        let today_text = today.to_string();
+        let (product, is_new) = match input.product_id {
+            Some(id) => (repo::find_product(c, id, &today_text)?.ok_or(ServiceError::NotFound("product"))?, false),
+            None => {
+                let name = input.product_name.trim();
+                if name.is_empty() || chars(name) > 120 {
+                    return Err(invalid("productName", "Product name is required (at most 120 characters)."));
+                }
+                let same_name = repo::query_products(
+                    c,
+                    &ProductQuery { text: name, category_id: None, active_only: false, stock: "ALL", product_id: None, today: &today_text, limit: 50 },
+                )?
+                .into_iter()
+                .find(|p| p.name.to_lowercase() == name.to_lowercase());
+                match same_name {
+                    Some(existing) => (existing, false),
+                    None => {
+                        if let Some(type_id) = input.type_id {
+                            if !repo::list_categories(c)?.iter().any(|t| t.id == type_id && t.is_active) {
+                                return Err(ServiceError::NotAllowed("The selected product type no longer exists.".into()));
+                            }
+                        }
+                        let sku = new_sku(c)?;
+                        let fields = ProductFields {
+                            sku: &sku,
+                            name,
+                            generic_name: "",
+                            category_id: input.type_id,
+                            product_type: "OTHER",
+                            manufacturer: "",
+                            unit: "pcs",
+                            gst_rate_bp: 0,
+                            default_selling_price_paise: input.mrp_paise,
+                            default_purchase_price_paise: input.purchase_price_paise,
+                            min_stock: 0,
+                            requires_expiry: true,
+                            is_active: true,
+                            notes: "",
+                        };
+                        let id = repo::insert_product(c, &fields, now)?;
+                        audit::record(c, now, Actor::from(actor), "PRODUCT_CREATE", Some(("product", id.to_string())), Some(json!({ "sku": sku, "addedWithStock": true })))?;
+                        (repo::find_product(c, id, &today_text)?.ok_or(ServiceError::NotFound("product"))?, true)
+                    }
+                }
+            }
+        };
+        if !product.is_active {
+            return Err(ServiceError::NotAllowed(format!("{} is archived. An administrator can restore it under Inventory → Update.", product.name)));
+        }
+        // Prices shown in lists follow the latest delivery, set by an administrator; a
+        // receptionist's delivery keeps its own prices on the lot.
+        if !is_new && actor.role.allows(Permission::ManageInventory) {
+            repo::update_product_prices(c, product.id, input.mrp_paise, input.purchase_price_paise, now)?;
+        }
+        let lot_no = format!("LOT-{:06}", next_number(c, "LOT", "ALL")?);
+        let expiry_text = expiry.to_string();
+        let batch_id = repo::insert_batch(
+            c,
+            &NewBatch {
+                product_id: product.id,
+                batch_no: &lot_no,
+                expiry_date: Some(&expiry_text),
+                supplier_id: Some(vendor_id),
+                purchase_price_paise: input.purchase_price_paise,
+                selling_price_paise: input.mrp_paise,
+                now,
+            },
+        )?;
+        repo::apply_movement(c, &Movement { batch_id, kind: "PURCHASE", qty_change: input.qty, reason: "Stock received", bill_id: None, sales_return_id: None, user_id: actor.user_id, now })?
+            .ok_or_else(|| ServiceError::Corrupt("add inventory failed".into()))?;
+        audit::record(c, now, Actor::from(actor), "STOCK_IN", Some(("batch", batch_id.to_string())), Some(json!({ "product": product.sku, "lot": lot_no, "qty": input.qty, "mrp": input.mrp_paise })))?;
+        repo::find_batch(c, batch_id)?.ok_or(ServiceError::NotFound("batch"))
+    })
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteOutcome {
+    /// Removed completely (it was never stocked or sold).
+    pub deleted: bool,
+    /// Kept for its history but hidden from billing and lists (soft delete).
+    pub archived: bool,
+}
+
+/// Inventory → Delete (administrators): a product with any stock history or bills is archived,
+/// never removed, so old bills and the stock ledger stay complete. An unused one is removed.
+pub fn delete_product(db: &mut Database, actor: &Session, product_id: i64, now: i64) -> Result<DeleteOutcome, ServiceError> {
+    actor.require(Permission::ManageInventory)?;
+    db.write(|c| {
+        verify_actor(c, actor)?;
+        let product = repo::find_product(c, product_id, "0000-00-00")?.ok_or(ServiceError::NotFound("product"))?;
+        let details = Some(json!({ "sku": product.sku, "name": product.name }));
+        if repo::product_in_use(c, product_id)? {
+            if product.total_qty > 0 {
+                return Err(ServiceError::NotAllowed(format!(
+                    "{} still has {} {} in stock. Adjust the stock to 0 first, or keep the product.",
+                    product.name, product.total_qty, product.unit
+                )));
+            }
+            repo::set_product_active(c, product_id, false, now)?;
+            audit::record(c, now, Actor::from(actor), "PRODUCT_ARCHIVE", Some(("product", product_id.to_string())), details)?;
+            Ok(DeleteOutcome { deleted: false, archived: true })
+        } else {
+            repo::delete_unused_product(c, product_id)?;
+            audit::record(c, now, Actor::from(actor), "PRODUCT_DELETE", Some(("product", product_id.to_string())), details)?;
+            Ok(DeleteOutcome { deleted: true, archived: false })
+        }
+    })
 }
 
 /// Receives stock into a batch (new or existing) and records it in the ledger.

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Card, MenuItem, Stack, Table, TableBody, TableCell, TableHead, TableRow, TextField } from '@mui/material';
+import { Button, Card, MenuItem, Stack, Table, TableBody, TableCell, TableHead, TableRow, TextField } from '@mui/material';
 import { api, type BillStatus } from '../../api';
 import { EmptyState, ErrorAlert, Loading, PageHeader, useLoader } from '../../components/common';
 import { t } from '../../i18n/en';
@@ -18,14 +18,15 @@ export function BillsPage() {
   const [text, setText] = useState('');
   const [query, setQuery] = useState('');
   const [openBill, setOpenBill] = useState<number | null>(null);
+  const [limit, setLimit] = useState(300);
 
   useEffect(() => {
     const timer = window.setTimeout(() => setQuery(text), 250);
     return () => window.clearTimeout(timer);
   }, [text]);
   const { data, error, loading, reload } = useLoader(
-    () => api.listBills({ fromDate: from || null, toDate: to || null, status: status || null, text: query }),
-    [from, to, status, query],
+    () => api.listBills({ fromDate: from || null, toDate: to || null, status: status || null, text: query, limit }),
+    [from, to, status, query, limit],
   );
 
   return (
@@ -79,6 +80,13 @@ export function BillsPage() {
           </Table>
         )}
       </Card>
+      {data && data.length >= limit && (
+        <Stack direction="row" sx={{ mt: 2, justifyContent: 'center' }}>
+          <Button onClick={() => setLimit(limit + 300)} disabled={loading}>
+            {t.products.loadMore}
+          </Button>
+        </Stack>
+      )}
       {openBill !== null && <BillDetailDialog billId={openBill} onClose={() => setOpenBill(null)} onChanged={reload} />}
     </>
   );

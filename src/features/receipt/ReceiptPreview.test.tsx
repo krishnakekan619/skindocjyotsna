@@ -14,8 +14,8 @@ const sample: ReceiptData = {
   dateTime: '25-Sep-2026 10:42',
   clientLabel: 'John Doe (CL-000045)',
   lines: [
-    { name: 'Paracetamol 500mg', detail: 'Batch A23 · Exp 12/2026', qty: 2, unitPrice: 2000, amount: 4000, notSuppliedQty: 0, section: '' },
-    { name: 'Sunscreen SPF 50', detail: null, qty: 0, unitPrice: 0, amount: 0, notSuppliedQty: 1, section: '' },
+    { name: 'Paracetamol 500mg', detail: 'Batch A23 · Exp 12/2026', qty: 2, unitPrice: 2000, discount: 250, amount: 3750, notSuppliedQty: 0, section: '' },
+    { name: 'Sunscreen SPF 50', detail: null, qty: 0, unitPrice: 0, discount: 0, amount: 0, notSuppliedQty: 1, section: '' },
   ],
   subtotal: 16000,
   breakdown: [],
@@ -60,7 +60,7 @@ describe('ReceiptPreview', () => {
 });
 
 describe('ReceiptPreview with consultation and procedures', () => {
-  const consultation = { name: 'General Consultation', detail: null, qty: 1, unitPrice: 50000, amount: 50000, notSuppliedQty: 0, section: 'Consultation' };
+  const consultation = { name: 'General Consultation', detail: null, qty: 1, unitPrice: 50000, discount: 0, amount: 50000, notSuppliedQty: 0, section: 'Consultation' };
   const medicine = { ...sample.lines[0]!, section: 'Medicines & Products' };
   const html = renderToStaticMarkup(
     <ReceiptPreview

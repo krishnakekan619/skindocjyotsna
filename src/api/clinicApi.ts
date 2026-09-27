@@ -35,6 +35,10 @@ export interface ClinicApi {
   getProduct(productId: number): Promise<T.ProductDetail>;
   saveProduct(input: T.ProductInput): Promise<T.ProductRow>;
   stockIn(input: T.StockInInput): Promise<T.BatchRow>;
+  /** Inventory → Add Inventory (receptionists too). */
+  addInventory(input: T.AddInventoryInput): Promise<T.BatchRow>;
+  /** Inventory → Delete (administrators): archives a product with history, removes an unused one. */
+  deleteProduct(productId: number): Promise<T.DeleteOutcome>;
   adjustStock(input: T.AdjustInput): Promise<T.BatchRow>;
   listStockLedger(productId: number | null, limit: number): Promise<T.LedgerRow[]>;
   listExpiring(withinDays: number): Promise<T.ExpiringBatch[]>;

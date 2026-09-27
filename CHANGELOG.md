@@ -1,6 +1,22 @@
 # Changelog
 
-## v0.3.1 (unreleased): faster desk billing and a richer dashboard
+## v0.4.0 (unreleased): simple inventory
+
+- **Inventory menu:** one **Inventory** screen with **Add Inventory**, **Update** and **Delete**.
+- **Add Inventory:** one form per delivery. The fields are pharma/vendor, product, product type, MRP, clinic bought price (both incl. GST), expiry and quantity. No batch number, HSN, GST breakup or invoice number is asked for. A new vendor or product is created as you type it. The form shows what the product will bill at (for example "MRP ₹100 − 10% = ₹90").
+- **Receptionists can add stock.** Update and Delete stay with administrators.
+- **Delete:**
+  - a product that was ever stocked or sold is **archived**, so old bills keep it;
+  - one that never was is removed;
+  - a product still in stock can't be deleted.
+- **Inventory list** shows product, type, vendor, MRP, bought price, stock and expiry status (Expired / Expires soon / OK). Search also finds products by vendor. "Load more" loads the next rows.
+- **Product types** are admin-managed (Product types & vendors). It starts with Tablet, Capsule, Cream, Ointment, Gel, Lotion, Serum, Sunscreen, Face wash, Shampoo, Soap, Injection, Consumable and Other.
+- **Bills:** every medicine line shows quantity × MRP, its discount and the price it sells at. Receipts and PDFs have **MRP** and **Disc** columns.
+- **Buttons:** **Save & print bill** / **Save bill**; then **Print**, **Generate PDF**, **Send via WhatsApp**.
+- **GST:** hidden. Prices are final, new products default to 0%, and no GST line appears unless an admin sets a rate.
+- **Bill history:** "Load more".
+
+## v0.3.1: faster desk billing and a richer dashboard
 
 - **New client on the bill:** type the name; if the client exists, pick them from the suggestions. If not, type the **mobile number** next to it. The client is saved together with the bill at Finalize, with no popup and no Clients tab. If the name or phone already belongs to someone, the screen shows them with **Use**, or you can confirm it's a different person.
 - **Consultations and procedures typed on the bill:** type the name like a client name. List entries fill in their usual price; a new name gets the amount you type and joins the list for next time. **+ Consultation ₹500** still adds the standard one in one click.

@@ -2,7 +2,8 @@
 
 use clinic_core::auth::Permission;
 use clinic_services::inventory::{
-    self, AdjustInput, CategoryInput, ExpiringBatch, ProductDetail, ProductFilter, ProductInput, SaleProduct, StockInInput, SupplierInput,
+    self, AddInventoryInput, AdjustInput, CategoryInput, DeleteOutcome, ExpiringBatch, ProductDetail, ProductFilter, ProductInput, SaleProduct, StockInInput,
+    SupplierInput,
 };
 use clinic_sqlite::repo::inventory::{BatchRow, Category, LedgerRow, ProductRow, Supplier};
 use tauri::State;
@@ -86,4 +87,18 @@ pub fn search_products_for_sale(state: State<'_, AppState>, text: String) -> Res
 pub fn recent_products_for_sale(state: State<'_, AppState>) -> Result<Vec<SaleProduct>, CommandError> {
     let session = state.session(Permission::CreateBills)?;
     Ok(inventory::recent_for_sale(&*state.db()?, &session, now())?)
+}
+
+/// Inventory → Add Inventory (receptionists too): the simple one-screen stock form.
+#[tauri::command(async)]
+pub fn add_inventory(state: State<'_, AppState>, input: AddInventoryInput) -> Result<BatchRow, CommandError> {
+    let session = state.session(Permission::AddStock)?;
+    Ok(inventory::add_inventory(&mut *state.db()?, &session, input, now())?)
+}
+
+/// Inventory → Delete (administrators): archives a product with history, removes an unused one.
+#[tauri::command(async)]
+pub fn delete_product(state: State<'_, AppState>, product_id: i64) -> Result<DeleteOutcome, CommandError> {
+    let session = state.session(Permission::ManageInventory)?;
+    Ok(inventory::delete_product(&mut *state.db()?, &session, product_id, now())?)
 }

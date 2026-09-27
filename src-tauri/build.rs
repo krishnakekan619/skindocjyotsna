@@ -30,6 +30,8 @@ const COMMANDS: &[&str] = &[
     "get_product",
     "save_product",
     "stock_in",
+    "add_inventory",
+    "delete_product",
     "adjust_stock",
     "list_stock_ledger",
     "list_expiring",

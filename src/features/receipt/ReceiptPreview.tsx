@@ -37,7 +37,8 @@ export function ReceiptPreview({ data }: { data: ReceiptData }) {
           <tr>
             <th>Item</th>
             <th className="num">Qty</th>
-            <th className="num">Rate</th>
+            <th className="num">MRP</th>
+            <th className="num">Disc</th>
             <th className="num">Amount</th>
           </tr>
         </thead>
@@ -50,7 +51,7 @@ export function ReceiptPreview({ data }: { data: ReceiptData }) {
               <Fragment key={`${line.name}-${index}`}>
                 {heading && (
                   <tr className="receipt__section">
-                    <td colSpan={4}>{heading}</td>
+                    <td colSpan={5}>{heading}</td>
                   </tr>
                 )}
               <tr className={notSupplied ? 'is-not-supplied' : undefined}>
@@ -60,6 +61,7 @@ export function ReceiptPreview({ data }: { data: ReceiptData }) {
                 </td>
                 <td className="num">{line.qty}</td>
                 <td className="num">{notSupplied ? '–' : formatPaise(line.unitPrice)}</td>
+                <td className="num">{line.discount ? `-${formatPaise(line.discount)}` : '–'}</td>
                 <td className="num">{formatPaise(line.amount)}</td>
               </tr>
               </Fragment>

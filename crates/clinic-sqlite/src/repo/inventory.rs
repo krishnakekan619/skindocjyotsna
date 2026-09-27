@@ -49,6 +49,8 @@ pub struct ProductRow {
     pub total_qty: i64,
     pub sellable_qty: i64,
     pub next_expiry: Option<String>,
+    /// Vendor of the most recent stock received.
+    pub last_vendor: Option<String>,
 }
 
 /// Editable product fields (insert and update).
@@ -180,14 +182,18 @@ SELECT * FROM (
            COALESCE((SELECT SUM(b.quantity) FROM inventory_batch b
                      WHERE b.product_id = p.id AND (b.expiry_date IS NULL OR b.expiry_date >= :today)), 0) AS sellable_qty,
            (SELECT MIN(b.expiry_date) FROM inventory_batch b
-             WHERE b.product_id = p.id AND b.quantity > 0 AND b.expiry_date >= :today) AS next_expiry
+             WHERE b.product_id = p.id AND b.quantity > 0 AND b.expiry_date >= :today) AS next_expiry,
+           (SELECT s.name FROM inventory_batch b JOIN supplier s ON s.id = b.supplier_id
+             WHERE b.product_id = p.id ORDER BY b.id DESC LIMIT 1) AS last_vendor
     FROM product p LEFT JOIN category c ON c.id = p.category_id
     WHERE (:product_id IS NULL OR p.id = :product_id)
       AND (:category_id IS NULL OR p.category_id = :category_id)
       AND (:active_only = 0 OR p.is_active = 1)
       AND (:text = '' OR p.name LIKE :like OR p.generic_name LIKE :like OR p.sku LIKE :like
            OR p.manufacturer LIKE :like
-           OR EXISTS (SELECT 1 FROM inventory_batch b WHERE b.product_id = p.id AND b.batch_no LIKE :like))
+           OR EXISTS (SELECT 1 FROM inventory_batch b WHERE b.product_id = p.id AND b.batch_no LIKE :like)
+           OR EXISTS (SELECT 1 FROM inventory_batch b JOIN supplier s ON s.id = b.supplier_id
+                      WHERE b.product_id = p.id AND s.name LIKE :like))
 )
 WHERE :stock = 'ALL'
    OR (:stock = 'LOW' AND sellable_qty > 0 AND sellable_qty <= min_stock)
@@ -218,6 +224,7 @@ fn product_from_row(r: &Row<'_>) -> rusqlite::Result<ProductRow> {
         total_qty: r.get(18)?,
         sellable_qty: r.get(19)?,
         next_expiry: r.get(20)?,
+        last_vendor: r.get(21)?,
     })
 }
 
@@ -283,6 +290,34 @@ pub fn update_product(conn: &Connection, id: i64, p: &ProductFields<'_>, now: i6
             p.default_selling_price_paise, p.default_purchase_price_paise, p.min_stock, p.requires_expiry,
             p.is_active, p.notes, now
         ],
+    )
+}
+
+/// The product has stock history or appears on a bill (then it is archived, never deleted).
+pub fn product_in_use(conn: &Connection, id: i64) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM inventory_batch WHERE product_id = ?1)
+             OR EXISTS (SELECT 1 FROM bill_item WHERE product_id = ?1)
+             OR EXISTS (SELECT 1 FROM inventory_transaction WHERE product_id = ?1)",
+        [id],
+        |r| r.get(0),
+    )
+}
+
+/// Only for a product that was never stocked or sold (see `product_in_use`).
+pub fn delete_unused_product(conn: &Connection, id: i64) -> rusqlite::Result<usize> {
+    conn.execute("DELETE FROM product WHERE id = ?1", [id])
+}
+
+pub fn set_product_active(conn: &Connection, id: i64, is_active: bool, now: i64) -> rusqlite::Result<usize> {
+    conn.execute("UPDATE product SET is_active = ?2, updated_at = ?3 WHERE id = ?1", params![id, is_active, now])
+}
+
+/// The product's MRP and purchase price shown in lists (each lot keeps its own prices).
+pub fn update_product_prices(conn: &Connection, id: i64, mrp: i64, purchase: i64, now: i64) -> rusqlite::Result<usize> {
+    conn.execute(
+        "UPDATE product SET default_selling_price_paise = ?2, default_purchase_price_paise = ?3, updated_at = ?4 WHERE id = ?1",
+        params![id, mrp, purchase, now],
     )
 }
 

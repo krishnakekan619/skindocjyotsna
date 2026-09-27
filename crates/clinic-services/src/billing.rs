@@ -731,6 +731,8 @@ pub struct BillFilter {
     pub status: Option<String>,
     pub client_id: Option<i64>,
     pub text: String,
+    /// How many rows ("Load more" asks for more); default 300, at most 5000.
+    pub limit: Option<u32>,
 }
 
 pub fn list(db: &Database, actor: &Session, filter: BillFilter) -> Result<Vec<BillRow>, ServiceError> {
@@ -746,7 +748,7 @@ pub fn list(db: &Database, actor: &Session, filter: BillFilter) -> Result<Vec<Bi
         let status = filter.status.as_deref().filter(|s| !s.is_empty());
         Ok(repo::list_bills(
             c,
-            &BillQuery { from: bound(&filter.from_date, "fromDate", 0)?, to: bound(&filter.to_date, "toDate", 1)?, status, client_id: filter.client_id, text: &filter.text, limit: 300 },
+            &BillQuery { from: bound(&filter.from_date, "fromDate", 0)?, to: bound(&filter.to_date, "toDate", 1)?, status, client_id: filter.client_id, text: &filter.text, limit: filter.limit.unwrap_or(300).clamp(1, 5_000) },
         )?)
     })
 }
@@ -1033,6 +1035,7 @@ pub fn receipt(db: &Database, actor: &Session, bill_id: i64) -> Result<ReceiptDa
             detail: None,
             qty: u32::try_from(s.qty).unwrap_or(0),
             unit_price: Paise::new(s.unit_price_paise),
+            discount: Paise::new(s.discount_share_paise),
             amount: Paise::new(s.line_total_paise),
             not_supplied_qty: 0,
             section: section.to_string(),
@@ -1050,15 +1053,18 @@ pub fn receipt(db: &Database, actor: &Session, bill_id: i64) -> Result<ReceiptDa
                 detail: (!i.batches.is_empty()).then(|| {
                     i.batches
                         .iter()
-                        .map(|b| match &b.expiry_date {
-                            Some(e) => format!("Batch {} · Exp {}", b.batch_no, short_expiry(e)),
-                            None => format!("Batch {}", b.batch_no),
+                        // Lot numbers made up by Add Inventory mean nothing to patients: expiry only.
+                        .map(|b| match (&b.expiry_date, b.batch_no.starts_with("LOT-")) {
+                            (Some(e), true) => format!("Exp {}", short_expiry(e)),
+                            (Some(e), false) => format!("Batch {} · Exp {}", b.batch_no, short_expiry(e)),
+                            (None, _) => format!("Batch {}", b.batch_no),
                         })
                         .collect::<Vec<_>>()
                         .join(", ")
                 }),
                 qty: u32::try_from(i.qty).unwrap_or(0),
                 unit_price: Paise::new(i.unit_price_paise),
+                discount: Paise::new(i.discount_share_paise),
                 amount: Paise::new(i.line_total_paise),
                 not_supplied_qty: u32::try_from(i.not_supplied_qty).unwrap_or(0),
                 section: product_section.to_string(),

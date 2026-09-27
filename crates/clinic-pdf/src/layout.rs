@@ -15,10 +15,11 @@ const BOTTOM_LIMIT_MM: f32 = PAGE_HEIGHT_MM - MARGIN_MM - 8.0; // room for the p
 
 // Item table columns (x in mm; numbers are right-aligned at these positions).
 const ITEM_X: f32 = MARGIN_MM;
-const QTY_RIGHT: f32 = 86.0;
-const RATE_RIGHT: f32 = 110.0;
+const QTY_RIGHT: f32 = 72.0;
+const RATE_RIGHT: f32 = 94.0;
+const DISC_RIGHT: f32 = 114.0;
 const AMOUNT_RIGHT: f32 = RIGHT_MM;
-const ITEM_MAX_WIDTH: f32 = QTY_RIGHT - 12.0 - ITEM_X;
+const ITEM_MAX_WIDTH: f32 = QTY_RIGHT - 10.0 - ITEM_X;
 
 const BODY: f32 = 9.0;
 const SMALL: f32 = 7.5;
@@ -222,7 +223,8 @@ fn header(p: &mut Pages<'_>, data: &ReceiptData) {
 fn table_header(p: &mut Pages<'_>) {
     p.text("Item", ITEM_X, BODY, Weight::Bold, Align::Left, BLACK);
     p.text("Qty", QTY_RIGHT, BODY, Weight::Bold, Align::Right, BLACK);
-    p.text("Rate", RATE_RIGHT, BODY, Weight::Bold, Align::Right, BLACK);
+    p.text("MRP", RATE_RIGHT, BODY, Weight::Bold, Align::Right, BLACK);
+    p.text("Disc", DISC_RIGHT, BODY, Weight::Bold, Align::Right, BLACK);
     p.text("Amount", AMOUNT_RIGHT, BODY, Weight::Bold, Align::Right, BLACK);
     p.advance(BODY);
     p.rule();
@@ -257,6 +259,8 @@ fn item_line(p: &mut Pages<'_>, data: &ReceiptData, line: &ReceiptLine) {
     p.text(&line.qty.to_string(), QTY_RIGHT, BODY, Weight::Regular, Align::Right, BLACK);
     let rate = if not_supplied { "–".to_string() } else { money(line.unit_price) };
     p.text(&rate, RATE_RIGHT, BODY, Weight::Regular, Align::Right, BLACK);
+    let discount = if line.discount == Paise::ZERO { "–".to_string() } else { format!("-{}", money(line.discount)) };
+    p.text(&discount, DISC_RIGHT, BODY, Weight::Regular, Align::Right, BLACK);
     p.text(&money(line.amount), AMOUNT_RIGHT, BODY, Weight::Regular, Align::Right, BLACK);
     p.advance(BODY);
     if let Some(detail) = detail {

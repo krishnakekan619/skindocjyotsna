@@ -598,7 +598,7 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
                           </Typography>
                         </Typography>
                         <Typography variant="body2" color={p.availableQty > 0 ? 'text.secondary' : 'error'}>
-                          {p.availableQty > 0 ? t.billing.stock(p.availableQty, p.unit) : t.products.filterOut} · {rupees(p.pricePaise)}
+                          {p.availableQty > 0 ? t.billing.stock(p.availableQty, p.unit) : t.products.filterOut} · {t.products.mrp} {rupees(p.pricePaise)}
                           {p.nextExpiry ? ` · ${t.products.expiry} ${formatExpiry(p.nextExpiry)}` : ''}
                           {p.expiresSoon ? ` · ⚠ ${t.billing.expiresSoon}` : ''}
                         </Typography>
@@ -639,12 +639,24 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
                   {lines.map((line) => {
                     const quoted = quoteFor(line.product.productId).filter((q) => q.qty > 0);
                     const net = quoted.reduce((s, q) => s + q.netPaise, 0);
+                    const qty = quoted.reduce((s, q) => s + q.qty, 0);
+                    const off = quoted.reduce((s, q) => s + q.discountSharePaise, 0);
+                    // Each line: quantity × MRP, its share of the discount, and the price per unit it sells at.
+                    const detail = quoted.length
+                      ? [
+                          quoted.map((q) => t.billing.lineDetail(q.qty, rupees(q.unitPricePaise))).join(' + '),
+                          off > 0 ? t.billing.lineDiscount(rupees(off)) : null,
+                          qty > 0 ? t.billing.sellingPrice(rupees(Math.round(net / qty))) : null,
+                        ]
+                          .filter(Boolean)
+                          .join(' · ')
+                      : '—';
                     return (
                       <Stack key={line.product.productId} direction="row" spacing={2} sx={{ alignItems: 'center', py: 1 }}>
                         <Box sx={{ flexGrow: 1 }}>
                           <Typography sx={{ fontWeight: 600 }}>{line.product.name}</Typography>
                           <Typography variant="body2" color="text.secondary">
-                            {quoted.length ? `${quoted.map((q) => rupees(q.unitPricePaise)).join(' / ')} · ${quoted.flatMap((q) => q.batchNos).join(', ')}` : '—'}
+                            {detail}
                             {quoted.some((q) => q.expiresSoon) && ` · ⚠ ${t.billing.expiresSoon}`}
                           </Typography>
                           {line.notSuppliedQty > 0 && (

@@ -112,6 +112,8 @@ pub fn run() {
             commands::inventory::get_product,
             commands::inventory::save_product,
             commands::inventory::stock_in,
+            commands::inventory::add_inventory,
+            commands::inventory::delete_product,
             commands::inventory::adjust_stock,
             commands::inventory::list_stock_ledger,
             commands::inventory::list_expiring,

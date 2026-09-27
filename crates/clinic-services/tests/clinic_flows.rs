@@ -704,3 +704,66 @@ fn the_dashboard_splits_sales_and_lists_top_sellers() -> TestResult {
     assert_eq!(top.medicines.first().map(|m| m.product_name.as_str()), Some("Paracetamol 500mg"));
     Ok(())
 }
+
+// ---- v0.4: simple Add Inventory, delete = archive ------------------------------------------------
+
+fn add_stock(product_name: &str, vendor: &str, mrp: i64, bought: i64, qty: i64) -> inventory::AddInventoryInput {
+    inventory::AddInventoryInput {
+        product_id: None,
+        product_name: product_name.into(),
+        type_id: None,
+        vendor_id: None,
+        vendor_name: vendor.into(),
+        mrp_paise: mrp,
+        purchase_price_paise: bought,
+        expiry_date: Some("2027-03-31".into()),
+        qty,
+    }
+}
+
+#[test]
+fn a_receptionist_adds_inventory_in_one_step_and_it_sells_at_mrp_minus_the_standard_discount() -> TestResult {
+    let mut clinic = clinic()?;
+    // New product and new vendor, typed; no batch number asked for.
+    let lot = inventory::add_inventory(&mut clinic.db, &clinic.reception, add_stock("Sunscreen SPF 50", "Derma Pharma", 10_000, 7_000, 10), NOW)?;
+    assert!(lot.batch_no.starts_with("LOT-"));
+    assert_eq!((lot.quantity, lot.selling_price_paise, lot.purchase_price_paise), (10, 10_000, 7_000));
+    assert_eq!(lot.supplier_name.as_deref(), Some("Derma Pharma"));
+    // The same names again reuse the product and the vendor.
+    let again = inventory::add_inventory(&mut clinic.db, &clinic.reception, add_stock("sunscreen spf 50", "derma pharma", 10_000, 7_000, 5), NOW)?;
+    assert_eq!(again.product_id, lot.product_id);
+    assert_eq!(inventory::list_suppliers(&clinic.db, &clinic.reception)?.len(), 1);
+    assert_eq!(sellable(&clinic, lot.product_id)?, 15);
+    let listed = inventory::list_products(&clinic.db, &clinic.reception, ProductFilter { text: "Derma".into(), ..Default::default() }, NOW)?;
+    assert_eq!(listed.first().and_then(|p| p.last_vendor.clone()).as_deref(), Some("Derma Pharma"), "search and list by vendor");
+
+    // ₹100 MRP with the standard 10% discount is billed at ₹90.
+    let input = bill("bill-key-0100", vec![line(lot.product_id, 1)], Discount::Percent(BasisPoints::new(1_000)), cash(9_000));
+    let done = billing::finalize(&mut clinic.db, &clinic.reception, input, NOW)?;
+    assert_eq!((done.items[0].unit_price_paise, done.items[0].discount_share_paise, done.bill.total_paise), (10_000, 1_000, 9_000));
+    let receipt = billing::receipt(&clinic.db, &clinic.reception, done.bill.id)?;
+    assert_eq!((receipt.lines[0].unit_price, receipt.lines[0].discount), (Paise::new(10_000), Paise::new(1_000)));
+
+    let mut expired = add_stock("Old Cream", "Derma Pharma", 5_000, 3_000, 1);
+    expired.expiry_date = Some("2026-01-01".into());
+    assert!(matches!(inventory::add_inventory(&mut clinic.db, &clinic.reception, expired, NOW), Err(ServiceError::Validation { field: "expiryDate", .. })));
+    Ok(())
+}
+
+#[test]
+fn deleting_a_product_archives_it_when_it_has_history() -> TestResult {
+    let mut clinic = clinic()?;
+    assert!(matches!(inventory::delete_product(&mut clinic.db, &clinic.reception, clinic.cream, NOW), Err(ServiceError::PermissionDenied)));
+    // In stock: refused, so stock never disappears silently.
+    assert!(matches!(inventory::delete_product(&mut clinic.db, &clinic.owner, clinic.cream, NOW), Err(ServiceError::NotAllowed(_))));
+    // Never stocked or sold: removed completely.
+    let unused = inventory::save_product(&mut clinic.db, &clinic.owner, product("Never Used Gel", "tube", 0, 0), NOW)?;
+    assert!(inventory::delete_product(&mut clinic.db, &clinic.owner, unused.id, NOW)?.deleted);
+    // Has history, stock 0: archived (hidden, kept for old bills and the ledger).
+    let batch = inventory::get_product(&clinic.db, &clinic.owner, clinic.cream, NOW)?.batches[0].id;
+    inventory::adjust_stock(&mut clinic.db, &clinic.owner, AdjustInput { batch_id: batch, counted_qty: 0, kind: "ADJUSTMENT".into(), reason: "Stopped selling".into() }, NOW)?;
+    let outcome = inventory::delete_product(&mut clinic.db, &clinic.owner, clinic.cream, NOW)?;
+    assert!(outcome.archived && !outcome.deleted);
+    assert!(inventory::list_products(&clinic.db, &clinic.owner, ProductFilter::default(), NOW)?.iter().all(|p| p.id != clinic.cream));
+    assert_ledger_consistent(&clinic)
+}

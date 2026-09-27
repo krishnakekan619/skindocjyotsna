@@ -30,6 +30,8 @@
     "allow-get-product",
     "allow-save-product",
     "allow-stock-in",
+    "allow-add-inventory",
+    "allow-delete-product",
     "allow-adjust-stock",
     "allow-list-stock-ledger",
     "allow-list-expiring",

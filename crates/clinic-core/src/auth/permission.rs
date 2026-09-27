@@ -30,6 +30,9 @@ pub enum Permission {
     ViewSystemInfo,
     /// Merge duplicate client records (moves bills; cannot be undone automatically).
     MergeClients,
+    /// Add Inventory: receive new stock (receptionists too). Changing prices, correcting
+    /// quantities and deleting stay with `ManageInventory`.
+    AddStock,
 }
 
 impl Role {
@@ -46,6 +49,7 @@ impl Role {
                     | Permission::ManageClients
                     | Permission::CreateBills
                     | Permission::ProcessReturns
+                    | Permission::AddStock
             ),
         }
     }
@@ -55,7 +59,7 @@ impl Role {
 mod tests {
     use super::*;
 
-    const ALL: [Permission; 16] = [
+    const ALL: [Permission; 17] = [
         Permission::UseApp,
         Permission::ManageOwnSecurity,
         Permission::ViewInventory,
@@ -72,6 +76,7 @@ mod tests {
         Permission::ManageBackups,
         Permission::ViewSystemInfo,
         Permission::MergeClients,
+        Permission::AddStock,
     ];
 
     #[test]
@@ -91,6 +96,7 @@ mod tests {
                 Permission::ManageClients,
                 Permission::CreateBills,
                 Permission::ProcessReturns,
+                Permission::AddStock,
             ]
         );
     }

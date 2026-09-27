@@ -60,7 +60,12 @@ pub struct ReceiptLine {
     /// Small second line, e.g. "Batch A23 · Exp 12/2026".
     pub detail: Option<String>,
     pub qty: u32,
+    /// MRP per unit (before the discount).
     pub unit_price: Paise,
+    /// This line's share of the bill discount.
+    #[serde(default)]
+    pub discount: Paise,
+    /// What is paid for the line: qty × MRP − discount.
     pub amount: Paise,
     /// Prescribed but not given because it was out of stock (qty and amount are then 0).
     pub not_supplied_qty: u32,
@@ -97,7 +102,8 @@ pub fn sample_receipt() -> ReceiptData {
                 detail: Some("Batch A23 · Exp 12/2026".into()),
                 qty: 2,
                 unit_price: Paise::new(2_000),
-                amount: Paise::new(4_000),
+                discount: Paise::new(250),
+                amount: Paise::new(3_750),
                 not_supplied_qty: 0,
                 section: String::new(),
             },
@@ -106,7 +112,8 @@ pub fn sample_receipt() -> ReceiptData {
                 detail: Some("Batch C19 · Exp 08/2027".into()),
                 qty: 1,
                 unit_price: Paise::new(12_000),
-                amount: Paise::new(12_000),
+                discount: Paise::new(750),
+                amount: Paise::new(11_250),
                 not_supplied_qty: 0,
                 section: String::new(),
             },
@@ -115,6 +122,7 @@ pub fn sample_receipt() -> ReceiptData {
                 detail: None,
                 qty: 0,
                 unit_price: Paise::ZERO,
+                discount: Paise::ZERO,
                 amount: Paise::ZERO,
                 not_supplied_qty: 1,
                 section: String::new(),

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Button, Checkbox, Dialog, DialogActions, DialogContent, DialogTitle, FormControlLabel, MenuItem, Stack, TextField } from '@mui/material';
-import { api, errorField, PRODUCT_TYPES, type Category, type ProductInput, type ProductRow, type ProductType } from '../../api';
+import { api, errorField, type Category, type ProductInput, type ProductRow } from '../../api';
 import { ErrorAlert, FormGrid } from '../../components/common';
 import { t } from '../../i18n/en';
 import { paiseToInput, parseRupees } from '../../lib/money';
@@ -33,10 +33,11 @@ function draftOf(p: ProductRow | null): ProductInput {
         name: '',
         genericName: '',
         categoryId: null,
-        productType: 'MEDICINE',
+        // The product type shown to staff is the admin-managed list (`categoryId`).
+        productType: 'OTHER',
         manufacturer: '',
         unit: 'strip',
-        gstRateBp: 1200,
+        gstRateBp: 0, // prices include GST; no breakup unless an admin sets a rate (DEC-036)
         defaultSellingPricePaise: 0,
         defaultPurchasePricePaise: 0,
         minStock: 0,
@@ -93,13 +94,6 @@ export function ProductDialog({ product, categories, onSaved, onClose }: { produ
                     {c.name}
                   </MenuItem>
                 ))}
-            </TextField>
-            <TextField select label={t.products.type} value={draft.productType} onChange={(e) => set({ productType: e.target.value as ProductType })}>
-              {PRODUCT_TYPES.map((type) => (
-                <MenuItem key={type} value={type}>
-                  {t.products.types[type]}
-                </MenuItem>
-              ))}
             </TextField>
             <TextField label={t.products.manufacturer} value={draft.manufacturer} onChange={(e) => set({ manufacturer: e.target.value })} />
             <TextField label={t.products.unit} value={draft.unit} onChange={(e) => set({ unit: e.target.value })} required error={field === 'unit'} />
