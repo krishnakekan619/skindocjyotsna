@@ -1,6 +1,16 @@
 # Compiles, tests and builds the Windows .exe and the macOS universal .dmg on GitHub-hosted
 # machines (DEC-021: the development laptop cannot run unsigned programs such as rustc).
 #
+# WHAT RUNS WHEN (DEC-040, to stay within the Actions minutes of a private repository, where
+# Windows minutes count 2x and macOS 10x):
+#   push to main    -> "check" (Linux): compiles and tests the Rust crates and the UI, plus the
+#                      lock, database and dependency checks; and "audit" (cargo-deny).
+#   Run workflow    -> the above, then the Windows and macOS installer builds (use this before
+#   (manual)           tagging, to catch Windows/macOS-only problems).
+#   tag vX.Y.Z      -> the above, then "release" publishes the GitHub Release.
+# The Tauri app shell (src-tauri) is compiled only in the installer builds: it needs the
+# platform's WebView.
+#
 # Node.js and Rust versions come from setup/windows/tools.lock, so CI uses the same pinned
 # releases as the offline setup bundles.
 #
@@ -29,8 +39,80 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Every push: everything that can run on Linux, the cheapest runner (1x minutes).
+  check:
+    name: Check (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Read pinned tool versions (setup/windows/tools.lock)
+        shell: bash
+        run: |
+          lock=setup/windows/tools.lock
+          echo "NODE_VERSION=$(grep '^NODE_VERSION=' "$lock" | cut -d= -f2 | tr -d '\r')" >> "$GITHUB_ENV"
+          echo "RUST_VERSION=$(grep '^RUST_VERSION=' "$lock" | cut -d= -f2 | tr -d '\r')" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master 2026-09
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+      - name: Tool versions
+        run: node -v && npm -v && rustc -V && cargo -V
+
+      - name: Install npm packages
+        run: npm ci --no-audit --no-fund
+
+      - name: Check locks (stable releases, checksums)
+        run: node scripts/check-locks.mjs
+
+      # Every SQL statement prepares against the real schema, and the protective triggers hold.
+      - name: Database checks (SQL and triggers)
+        run: |
+          node --no-warnings scripts/dev/check-sql.mjs
+          node --no-warnings scripts/dev/check-triggers.mjs
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: UI tests
+        run: npm test
+
+      - name: UI build
+        run: npx vite build
+
+      # All Rust crates except the Tauri app shell (compiled in the installer builds).
+      - name: Rust tests
+        run: cargo test --workspace --exclude skindocjyotsna
+
+      - name: Dependency audit (npm, including build tools)
+        run: npm audit --audit-level=high
+
+      # Quality checks: report only for now (DEC-038). They show their findings in the log and as
+      # annotations but do not fail the run; they become blocking once the findings are fixed.
+      - name: Rust lints (clippy, report only)
+        continue-on-error: true
+        run: cargo clippy --workspace --exclude skindocjyotsna --all-targets -- -D warnings
+
+      - name: Rust formatting (rustfmt, report only)
+        continue-on-error: true
+        run: cargo fmt --all -- --check
+
+  # Installers: only for a tag or a manual run, and only after the Linux check passed.
   build:
     name: ${{ matrix.name }}
+    needs: [check]
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     strategy:
       fail-fast: false
       matrix:
@@ -72,7 +154,7 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
           targets: ${{ matrix.rust_targets }}
-          components: clippy, rustfmt
+          components: clippy
 
       # Release (tag) builds start clean: a cache written by an ordinary run could otherwise
       # end up inside a published installer.
@@ -105,18 +187,11 @@ jobs:
       - name: Dependency audit (npm, including build tools)
         run: npm audit --audit-level=high
 
-      # Quality checks: report only for now (DEC-038). They show their findings in the log and as
-      # annotations but do not fail the build; they become blocking once the findings are fixed.
-      - name: Rust lints (clippy, report only)
+      # Lints for the Tauri app shell too (the Linux check cannot compile it). Report only.
+      - name: Rust lints incl. app shell (clippy, report only)
         if: runner.os == 'Windows'
         continue-on-error: true
         run: cargo clippy --workspace --all-targets -- -D warnings
-
-      - name: Rust formatting (rustfmt, report only)
-        if: runner.os == 'Windows'
-        continue-on-error: true
-        run: cargo fmt --all -- --check
-
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -153,7 +228,7 @@ jobs:
 
   release:
     name: Publish GitHub Release
-    needs: [build, audit]
+    needs: [check, build, audit]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:

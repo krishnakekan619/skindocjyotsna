@@ -41,7 +41,9 @@ npm ci                       # or: node scripts/offline-deps.mjs restore <bundle
 node scripts/build-release.mjs
 ```
 
-**B. GitHub Actions** (once the project is in a GitHub repository): run the `build` workflow manually, or push a tag `vX.Y.Z`. Download the `.dmg` and `.exe` from the run's artifacts.
+**B. GitHub Actions** (once the project is in a GitHub repository): run the `build` workflow manually (**Actions → build → Run workflow**), or push a tag `vX.Y.Z`. Download the `.dmg` and `.exe` from the run's artifacts.
+
+An ordinary push to `main` runs only the Linux **check** and **audit** jobs, not the installer builds (DEC-040: Windows minutes count 2× and macOS 10×). Before tagging a release, run the workflow manually once, so Windows- or macOS-only problems show up before the tag.
 
 ### Signing (not done yet: DESIGN Q15)
 
@@ -69,7 +71,7 @@ Every build writes `dist/release/<version>/BUILDINFO-<os>.txt`, which records th
    git tag v0.2.0
    git push origin main v0.2.0
    ```
-3. The **build** workflow builds and tests both installers. The **release** job then:
+3. The **build** workflow runs the Linux check, then builds and tests both installers. The **release** job then:
    - checks that every installer matches its `.sha256`;
    - publishes **GitHub Release `v0.2.0`** with the `.exe`, `.dmg`, `.sha256` files, `BUILDINFO` files and a combined `SHA256SUMS`.
 

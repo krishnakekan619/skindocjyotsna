@@ -32,6 +32,7 @@
   - **cargo-deny** blocks the build on a known vulnerability or an unknown crate source;
   - `npm audit` now also covers development packages.
 - **Clippy and rustfmt** run as reports for now; they will block once their findings are fixed.
+- **Cheaper CI** (DEC-040): a push to `main` runs only a Linux check, which covers Rust tests, UI tests, the build and all checks. The Windows and macOS installers are built only for a version tag or a manual **Run workflow**.
 - **Release builds** never reuse a cache. Both resolved Cargo.lock files (Windows, macOS) are uploaded and attached to releases.
 
 ### Tests
