@@ -18,7 +18,7 @@ import {
 } from '@mui/material';
 import { api, type DateRange, type SectionSales } from '../../api';
 import { useApp } from '../../app/AppContext';
-import { EmptyState, ErrorAlert, Loading, PageHeader, StatusChip, useLoader } from '../../components/common';
+import { EmptyState, ErrorAlert, Loading, PageHeader, StatusChip, useLoader, rowActions } from '../../components/common';
 import { MOD_KEY, t } from '../../i18n/en';
 import { addDaysIso, formatDateTime, formatExpiry, monthStartIso, todayIso } from '../../lib/dates';
 import { rupees } from '../../lib/money';
@@ -39,7 +39,7 @@ function rangeOf(period: Period): DateRange {
 
 function Tile({ label, value, tone, onClick }: { label: string; value: string | number; tone?: 'warning' | 'error' | undefined; onClick?: (() => void) | undefined }) {
   return (
-    <Card variant="outlined" sx={{ cursor: onClick ? 'pointer' : 'default', borderColor: tone ? `${tone}.main` : undefined }} onClick={onClick}>
+    <Card variant="outlined" sx={{ cursor: onClick ? 'pointer' : 'default', borderColor: tone ? `${tone}.main` : undefined }} {...(onClick ? rowActions(onClick) : {})}>
       <CardContent>
         <Typography variant="body2" color="text.secondary">
           {label}
@@ -92,7 +92,20 @@ function SalesSplit({ split }: { split: SectionSales }) {
             ))}
         </Box>
       )}
+      <Reconciliation parts={total} split={split} />
     </Stack>
+  );
+}
+
+/** Parts + round-off = total billed; − refunds = net. So the split adds up to the money figures. */
+function Reconciliation({ parts, split }: { parts: number; split: SectionSales }) {
+  const billed = parts + split.roundOffPaise;
+  const signed = (v: number) => (v < 0 ? `− ${rupees(-v)}` : `+ ${rupees(v)}`);
+  return (
+    <Typography variant="body2" color="text.secondary" sx={{ fontVariantNumeric: 'tabular-nums' }} data-testid="sales-reconciliation">
+      {t.dashboard.parts} {rupees(parts)} {signed(split.roundOffPaise)} {t.dashboard.roundOff} = {t.dashboard.totalBilled} {rupees(billed)} − {t.dashboard.refunds}{' '}
+      {rupees(split.refundsPaise)} = {t.dashboard.net} {rupees(billed - split.refundsPaise)}
+    </Typography>
   );
 }
 
@@ -137,6 +150,8 @@ export function DashboardPage() {
   const [period, setPeriod] = useState<Period>('today');
   const { data, error, loading } = useLoader(() => api.getDashboard(), []);
   const top = useLoader(() => api.topSellers(rangeOf(period)), [period]);
+  // Administrators only: warn when the disk is not encrypted (backups are not, DEC-038).
+  const system = useLoader(() => (isAdmin ? api.getSystemInfo() : Promise.resolve(null)), [isAdmin]);
 
   if (loading && !data) return <Loading />;
   if (!data) return <ErrorAlert error={error} />;
@@ -158,6 +173,7 @@ export function DashboardPage() {
           </Alert>
         )}
         {isAdmin && data.ledgerProblems > 0 && <Alert severity="error">{t.dashboard.ledgerWarning}</Alert>}
+        {isAdmin && system.data?.diskEncryption === 'OFF' && <Alert severity="warning">{t.dashboard.encryptionOff}</Alert>}
 
         {/* Today at a glance */}
         <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 2 }}>
@@ -232,7 +248,7 @@ export function DashboardPage() {
                 <Table size="small">
                   <TableBody>
                     {data.stockAlerts.map((p) => (
-                      <TableRow key={p.id} hover sx={{ cursor: 'pointer' }} onClick={() => navigate({ name: 'products' })}>
+                      <TableRow key={p.id} hover sx={{ cursor: 'pointer' }} {...rowActions(() => navigate({ name: 'products' }))}>
                         <TableCell>{p.name}</TableCell>
                         <TableCell align="right">
                           {p.sellableQty} {p.unit}
@@ -256,7 +272,7 @@ export function DashboardPage() {
                 <Table size="small">
                   <TableBody>
                     {data.expiringBatches.map((b) => (
-                      <TableRow key={b.id} hover sx={{ cursor: 'pointer' }} onClick={() => navigate({ name: 'expiry' })}>
+                      <TableRow key={b.id} hover sx={{ cursor: 'pointer' }} {...rowActions(() => navigate({ name: 'expiry' }))}>
                         <TableCell>{b.productName}</TableCell>
                         <TableCell>
                           {b.batchNo} · {formatExpiry(b.expiryDate)}
@@ -285,7 +301,7 @@ export function DashboardPage() {
                 <Table size="small">
                   <TableBody>
                     {data.recentBills.map((b) => (
-                      <TableRow key={b.id} hover sx={{ cursor: 'pointer' }} onClick={() => navigate({ name: 'bills' })}>
+                      <TableRow key={b.id} hover sx={{ cursor: 'pointer' }} {...rowActions(() => navigate({ name: 'bills' }))}>
                         <TableCell>{formatDateTime(b.finalizedAt)}</TableCell>
                         <TableCell>{b.billNo}</TableCell>
                         <TableCell>{b.clientName ?? t.billing.walkIn}</TableCell>

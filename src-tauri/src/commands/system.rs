@@ -35,6 +35,8 @@ pub struct SystemInfo {
     /// Second backup copy (`skindocjyotsnaBackup`) and how many backups it holds.
     mirror_dir: String,
     mirror_backups: usize,
+    /// FileVault / BitLocker on the data disk: "ON", "OFF" or "UNKNOWN".
+    disk_encryption: &'static str,
     database: DatabaseStatusDto,
 }
 
@@ -54,6 +56,7 @@ pub fn get_system_info(state: State<'_, AppState>) -> Result<SystemInfo, Command
         log_dir: paths.log_dir.display().to_string(),
         mirror_dir: paths.mirror_dir.display().to_string(),
         mirror_backups: clinic_sqlite::list_backups(&paths.mirror_dir).map(|files| files.len()).unwrap_or(0),
+        disk_encryption: crate::disk::encryption_status(&paths.data_dir),
         database: DatabaseStatusDto {
             sqlite_version: status.sqlite_version,
             schema_version: status.schema_version,

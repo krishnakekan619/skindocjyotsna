@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useState, type KeyboardEvent, type ReactNode } from 'react';
 import {
   Alert,
   Box,
@@ -158,4 +158,23 @@ export function ConfirmDialog({
 /** Two-column responsive form grid (no Grid component needed). */
 export function FormGrid({ children }: { children: ReactNode }) {
   return <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' }, gap: 2 }}>{children}</Box>;
+}
+
+/**
+ * Props for a clickable row or card: it can also be reached with Tab and opened with Enter or
+ * Space (keyboard-only use). Keys pressed on buttons inside the row are left to those buttons.
+ */
+export function rowActions(onActivate: () => void) {
+  return {
+    tabIndex: 0,
+    role: 'button',
+    onClick: onActivate,
+    onKeyDown: (e: KeyboardEvent) => {
+      if (e.target !== e.currentTarget) return;
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        onActivate();
+      }
+    },
+  };
 }

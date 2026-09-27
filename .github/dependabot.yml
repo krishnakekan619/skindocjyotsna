@@ -1,0 +1,29 @@
+# Proposes updates as pull requests (review, let CI run, then merge): GitHub Actions pinned by
+# commit SHA, npm packages (exact versions in package.json) and Rust crates (Cargo.toml).
+# Tauri's npm packages and the Rust crate must move together (DEC-035): merge those PRs together.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      tauri:
+        patterns: ["@tauri-apps/*"]
+      npm-all:
+        patterns: ["*"]
+        exclude-patterns: ["@tauri-apps/*"]
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      cargo-all:
+        patterns: ["*"]

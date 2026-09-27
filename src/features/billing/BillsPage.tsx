@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Button, Card, MenuItem, Stack, Table, TableBody, TableCell, TableHead, TableRow, TextField } from '@mui/material';
 import { api, type BillStatus } from '../../api';
-import { EmptyState, ErrorAlert, Loading, PageHeader, useLoader } from '../../components/common';
+import { EmptyState, ErrorAlert, Loading, PageHeader, useLoader, rowActions } from '../../components/common';
 import { t } from '../../i18n/en';
 import { addDaysIso, formatDateTime, todayIso } from '../../lib/dates';
 import { rupees } from '../../lib/money';
@@ -65,7 +65,7 @@ export function BillsPage() {
             </TableHead>
             <TableBody>
               {data.map((b) => (
-                <TableRow key={b.id} hover sx={{ cursor: 'pointer' }} onClick={() => setOpenBill(b.id)}>
+                <TableRow key={b.id} hover sx={{ cursor: 'pointer' }} {...rowActions(() => setOpenBill(b.id))}>
                   <TableCell>{b.billNo}</TableCell>
                   <TableCell>{formatDateTime(b.finalizedAt)}</TableCell>
                   <TableCell>{b.clientName ? `${b.clientName} (${b.clientCode ?? ''})` : t.billing.walkIn}</TableCell>

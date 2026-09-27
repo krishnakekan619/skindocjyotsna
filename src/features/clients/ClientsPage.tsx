@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Button, Card, Checkbox, FormControlLabel, Stack, Table, TableBody, TableCell, TableHead, TableRow, TextField } from '@mui/material';
 import { api, type ClientRow } from '../../api';
 import { useApp } from '../../app/AppContext';
-import { EmptyState, ErrorAlert, Loading, PageHeader, StatusChip, useLoader } from '../../components/common';
+import { EmptyState, ErrorAlert, Loading, PageHeader, StatusChip, useLoader, rowActions } from '../../components/common';
 import { t } from '../../i18n/en';
 import { formatDateTime } from '../../lib/dates';
 import { ClientDialog } from './ClientDialog';
@@ -61,7 +61,7 @@ export function ClientsPage() {
             </TableHead>
             <TableBody>
               {data.map((c) => (
-                <TableRow key={c.id} hover sx={{ cursor: 'pointer' }} onClick={() => navigate({ name: 'client', clientId: c.id })}>
+                <TableRow key={c.id} hover sx={{ cursor: 'pointer' }} {...rowActions(() => navigate({ name: 'client', clientId: c.id }))}>
                   <TableCell>{c.clientCode}</TableCell>
                   <TableCell>
                     {c.fullName} {!c.isActive && <StatusChip label={t.common.inactive} color="default" />}

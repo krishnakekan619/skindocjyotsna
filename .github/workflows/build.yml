@@ -9,10 +9,10 @@
 # combined SHA256SUMS. Unlike build artifacts (deleted after 14 days), releases are kept.
 #   git tag v0.1.0 && git push origin v0.1.0
 #
-# Before relying on this for production releases (DevSecOps):
-#   - pin every third-party action to a full commit SHA instead of a tag
-#   - add code-signing secrets (Apple Developer ID / Windows certificate) when available (Q15)
-#   - create setup/macos/tools.lock and switch to `build-release.mjs --release`
+# Supply chain (review 2026-09-27): every action is pinned to a full commit SHA (the version is in
+# the comment; Dependabot proposes updates), Rust crates are checked for known vulnerabilities by
+# cargo-deny on every run, and release (tag) builds never reuse a cache written by other runs.
+# Still open: code-signing secrets (Apple Developer ID / Windows certificate) when available (Q15).
 name: build
 
 on:
@@ -44,7 +44,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Check tag matches package.json version
         if: startsWith(github.ref, 'refs/tags/v')
@@ -63,17 +63,21 @@ jobs:
           echo "NODE_VERSION=$(grep '^NODE_VERSION=' "$lock" | cut -d= -f2 | tr -d '\r')" >> "$GITHUB_ENV"
           echo "RUST_VERSION=$(grep '^RUST_VERSION=' "$lock" | cut -d= -f2 | tr -d '\r')" >> "$GITHUB_ENV"
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
 
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master 2026-09
         with:
           toolchain: ${{ env.RUST_VERSION }}
           targets: ${{ matrix.rust_targets }}
+          components: clippy, rustfmt
 
-      - uses: Swatinem/rust-cache@v2
+      # Release (tag) builds start clean: a cache written by an ordinary run could otherwise
+      # end up inside a published installer.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
       - name: Tool versions
         shell: bash
@@ -98,45 +102,75 @@ jobs:
       - name: Test and build installer
         run: node scripts/build-release.mjs
 
-      - name: Dependency audit
-        run: npm audit --omit=dev --audit-level=high
+      - name: Dependency audit (npm, including build tools)
+        run: npm audit --audit-level=high
 
-      - uses: actions/upload-artifact@v7
+      # Quality checks: report only for now (DEC-038). They show their findings in the log and as
+      # annotations but do not fail the build; they become blocking once the findings are fixed.
+      - name: Rust lints (clippy, report only)
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Rust formatting (rustfmt, report only)
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        run: cargo fmt --all -- --check
+
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: SkinDocJyotsna-${{ matrix.os }}
           path: dist/release/**
           retention-days: 14
           if-no-files-found: error
 
-      # Cargo.lock does not exist until the first successful resolve; keep it so it can be
-      # committed (every Rust crate then becomes pinned and traceable).
-      - uses: actions/upload-artifact@v7
-        if: always() && runner.os == 'Windows'
+      # The Cargo.lock each build resolved (Windows and macOS resolve separately), kept with the
+      # release so the exact Rust crate versions in each installer stay traceable.
+      - name: Name the Cargo.lock after this platform
+        if: always()
+        shell: bash
+        run: '[ -f Cargo.lock ] && cp Cargo.lock "Cargo-${{ runner.os }}.lock" || true'
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
         with:
-          name: Cargo.lock
-          path: Cargo.lock
+          name: Cargo-lock-${{ matrix.os }}
+          path: Cargo-${{ runner.os }}.lock
           if-no-files-found: ignore
+
+  # Known vulnerabilities and unknown sources in Rust crates block the build (DEC-038).
+  audit:
+    name: Rust dependency audit (cargo-deny)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check
+          command-arguments: advisories sources
 
   release:
     name: Publish GitHub Release
-    needs: build
+    needs: [build, audit]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write          # only this job may create releases
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: SkinDocJyotsna-*
           path: release-files
           merge-multiple: true
 
-      # The Cargo.lock this build resolved (BUILDINFO's CARGO_LOCK_SHA256 refers to it), kept with
-      # the release so the exact Rust crate versions stay traceable.
-      - uses: actions/download-artifact@v8
+      # The Cargo.lock of each platform (BUILDINFO's CARGO_LOCK_SHA256 refers to it).
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: Cargo.lock
+          pattern: Cargo-lock-*
           path: release-files
+          merge-multiple: true
 
       # Artifacts keep their folder layout (dist/release/<version>/...): flatten to one folder.
       - name: Collect release files
@@ -154,7 +188,7 @@ jobs:
           count=0
           for sum in *.sha256; do sha256sum --check "$sum"; count=$((count + 1)); done
           [ "$count" -ge 2 ] || { echo "::error::Expected a Windows and a macOS installer, found $count"; exit 1; }
-          sha256sum *.exe *.dmg Cargo.lock > SHA256SUMS
+          sha256sum *.exe *.dmg Cargo-*.lock > SHA256SUMS
           cat SHA256SUMS
 
       - name: Create release
@@ -176,4 +210,4 @@ jobs:
             echo "The installers are not code-signed yet: Windows SmartScreen and macOS Gatekeeper will ask for confirmation on first run."
           } > NOTES.md
           gh release create "$GITHUB_REF_NAME" --title "SkinDocJyotsna $GITHUB_REF_NAME" --notes-file NOTES.md --verify-tag \
-            *.exe *.dmg *.sha256 BUILDINFO-*.txt SHA256SUMS Cargo.lock
+            *.exe *.dmg *.sha256 BUILDINFO-*.txt SHA256SUMS Cargo-*.lock

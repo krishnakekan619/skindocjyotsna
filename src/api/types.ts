@@ -637,6 +637,10 @@ export interface SectionSales {
   consultationPaise: Paise;
   proceduresPaise: Paise;
   medicinesPaise: Paise;
+  /** Rounding to the rupee: the three parts plus this = total billed. */
+  roundOffPaise: Paise;
+  /** Refunds paid in the period: total billed minus this = net sales. */
+  refundsPaise: Paise;
 }
 
 export interface ServiceSales {
@@ -719,6 +723,8 @@ export interface SystemInfo {
   /** Second backup copy: the skindocjyotsnaBackup folder. */
   mirrorDir: string;
   mirrorBackups: number;
+  /** FileVault (macOS) / BitLocker (Windows) on the data disk. */
+  diskEncryption: 'ON' | 'OFF' | 'UNKNOWN';
   database: DatabaseStatus;
 }
 

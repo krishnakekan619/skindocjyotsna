@@ -705,6 +705,35 @@ fn the_dashboard_splits_sales_and_lists_top_sellers() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn the_dashboard_split_adds_up_to_the_money_figures() -> TestResult {
+    let mut clinic = clinic()?;
+    let (consultation, _) = consultation_and_dressing(&clinic)?;
+    // ₹500 consultation + ₹20.00 − ₹0.51 medicine = ₹519.49, rounded to ₹519.00 (round-off −49 paise).
+    let mut input = bill("bill-key-0095", vec![line(clinic.paracetamol, 1)], Discount::Amount(Paise::new(51)), cash(51_900));
+    input.services = vec![service_line(consultation)];
+    let done = billing::finalize(&mut clinic.db, &clinic.reception, input, NOW)?;
+    assert_eq!((done.bill.total_paise, done.bill.round_off_paise), (51_900, -49));
+    billing::return_items(
+        &mut clinic.db,
+        &clinic.reception,
+        ReturnInput { bill_id: done.bill.id, lines: vec![ReturnLineInput { bill_item_id: done.items[0].id, qty: 1, restock: true }], reason: "Not needed".into(), refund_method: "CASH".into() },
+        NOW + 60,
+    )?;
+
+    let dash = reports::dashboard(&clinic.db, &clinic.reception, NOW + 120)?;
+    let split = &dash.sales_split_today;
+    let parts = split.consultation_paise + split.procedures_paise + split.medicines_paise;
+    assert_eq!(parts + split.round_off_paise, dash.sales_today.total_paise, "parts + round-off = total billed");
+    assert_eq!(split.refunds_paise, dash.sales_today.returned_paise);
+    assert!(split.refunds_paise > 0);
+    assert_eq!(parts + split.round_off_paise - split.refunds_paise, dash.net_sales_today_paise, "− refunds = net");
+
+    let range = DateRange { from: "2026-09-25".into(), to: "2026-09-25".into() };
+    assert_eq!(&reports::top_sellers(&clinic.db, &clinic.reception, &range)?.split, split, "same figures for the period view");
+    Ok(())
+}
+
 // ---- v0.4: simple Add Inventory, delete = archive ------------------------------------------------
 
 fn add_stock(product_name: &str, vendor: &str, mrp: i64, bought: i64, qty: i64) -> inventory::AddInventoryInput {

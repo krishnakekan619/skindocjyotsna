@@ -1,0 +1,17 @@
+# cargo-deny (CI job "audit", DEC-038): Rust crates with known vulnerabilities, or from unknown
+# sources, fail the build. Only the platforms the app ships for are checked.
+
+[graph]
+targets = ["x86_64-pc-windows-msvc", "x86_64-apple-darwin", "aarch64-apple-darwin"]
+
+[advisories]
+# Vulnerabilities always fail. Unmaintained crates fail only when we depend on them directly
+# (Tauri's own dependencies are Tauri's to replace); yanked versions are reported.
+unmaintained = "workspace"
+yanked = "warn"
+ignore = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

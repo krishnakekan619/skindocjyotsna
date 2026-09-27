@@ -1,6 +1,7 @@
 //! Desktop shell: wires the UI (IPC commands) to the services and the database.
 
 mod commands;
+mod disk;
 mod error;
 mod mirror;
 mod paths;

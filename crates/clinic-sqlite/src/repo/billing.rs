@@ -515,6 +515,10 @@ pub struct SectionSales {
     pub consultation_paise: i64,
     pub procedures_paise: i64,
     pub medicines_paise: i64,
+    /// Rounding to the rupee on those bills: the three parts plus this = total billed.
+    pub round_off_paise: i64,
+    /// Refunds paid out in the period (by return date): total billed minus this = net sales.
+    pub refunds_paise: i64,
 }
 
 pub fn section_sales(conn: &Connection, from: i64, to: i64) -> rusqlite::Result<SectionSales> {
@@ -525,9 +529,20 @@ pub fn section_sales(conn: &Connection, from: i64, to: i64) -> rusqlite::Result<
             (SELECT COALESCE(SUM(s.line_total_paise), 0) FROM bill_service_item s JOIN bill b ON b.id = s.bill_id
              WHERE b.status = 'FINALIZED' AND b.finalized_at >= ?1 AND b.finalized_at < ?2 AND s.kind = 'PROCEDURE'),
             (SELECT COALESCE(SUM(i.line_total_paise), 0) FROM bill_item i JOIN bill b ON b.id = i.bill_id
-             WHERE b.status = 'FINALIZED' AND b.finalized_at >= ?1 AND b.finalized_at < ?2)",
+             WHERE b.status = 'FINALIZED' AND b.finalized_at >= ?1 AND b.finalized_at < ?2),
+            (SELECT COALESCE(SUM(round_off_paise), 0) FROM bill
+             WHERE status = 'FINALIZED' AND finalized_at >= ?1 AND finalized_at < ?2),
+            (SELECT COALESCE(SUM(refund_paise), 0) FROM sales_return WHERE created_at >= ?1 AND created_at < ?2)",
         params![from, to],
-        |r| Ok(SectionSales { consultation_paise: r.get(0)?, procedures_paise: r.get(1)?, medicines_paise: r.get(2)? }),
+        |r| {
+            Ok(SectionSales {
+                consultation_paise: r.get(0)?,
+                procedures_paise: r.get(1)?,
+                medicines_paise: r.get(2)?,
+                round_off_paise: r.get(3)?,
+                refunds_paise: r.get(4)?,
+            })
+        },
     )
 }
 

@@ -18,6 +18,7 @@ import { ServicesPage } from '../features/settings/ServicesPage';
 import { SystemPage } from '../features/settings/SystemPage';
 import { UsersPage } from '../features/settings/UsersPage';
 import { MOD_KEY, t } from '../i18n/en';
+import { clearBillDraft } from '../lib/billDraft';
 import { AppContext, type AppContextValue, type NoticeSeverity, type Page } from './AppContext';
 import { useIdleLock } from './useIdleLock';
 
@@ -146,7 +147,13 @@ export function MainLayout({ status, session, setStatus }: { status: AppStatus; 
           <Button color="inherit" onClick={lock}>
             {t.nav.lock}
           </Button>
-          <Button color="inherit" onClick={() => api.logout().then(setStatus).catch(() => undefined)}>
+          <Button
+            color="inherit"
+            onClick={() => {
+              clearBillDraft(session.userId); // signing out drops the unfinished bill
+              api.logout().then(setStatus).catch(() => undefined);
+            }}
+          >
             {t.nav.logout}
           </Button>
         </Toolbar>

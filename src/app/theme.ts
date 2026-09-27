@@ -48,7 +48,6 @@ export const theme = createTheme({
     // Large click targets for staff who are not used to computers (brief §15).
     MuiButton: { defaultProps: { size: 'large', disableElevation: true }, styleOverrides: { root: { minHeight: 44 } } },
     MuiIconButton: { styleOverrides: { root: { minWidth: 40, minHeight: 40 } } },
-    MuiCard: { styleOverrides: { root: { borderColor: palette.border } } },
     MuiAppBar: { styleOverrides: { root: { backgroundColor: palette.card, color: palette.text, borderBottom: `1px solid ${palette.border}` } } },
     MuiDrawer: { styleOverrides: { paper: { backgroundColor: palette.secondaryBackground, borderRight: `1px solid ${palette.border}` } } },
     MuiListItemButton: {
@@ -62,5 +61,8 @@ export const theme = createTheme({
       },
     },
     MuiTableCell: { styleOverrides: { head: { fontWeight: 700, color: palette.mutedText } } },
+    // Rows and cards opened with the keyboard show where the focus is.
+    MuiTableRow: { styleOverrides: { root: { '&[role="button"]:focus-visible': { outline: `2px solid ${palette.rose}`, outlineOffset: -2 } } } },
+    MuiCard: { styleOverrides: { root: { borderColor: palette.border, '&[role="button"]:focus-visible': { outline: `2px solid ${palette.rose}`, outlineOffset: 2 } } } },
   },
 });

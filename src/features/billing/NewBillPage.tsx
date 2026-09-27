@@ -42,6 +42,7 @@ import {
 import { useApp } from '../../app/AppContext';
 import { ConfirmDialog, ErrorAlert, PageHeader } from '../../components/common';
 import { MOD_KEY, t } from '../../i18n/en';
+import { clearBillDraft, loadBillDraft, saveBillDraft } from '../../lib/billDraft';
 import { formatDateTime, formatExpiry, newBillKey } from '../../lib/dates';
 import { paiseToInput, parseRupees, rupees } from '../../lib/money';
 import { BillDetailDialog } from './BillDetailDialog';
@@ -73,6 +74,24 @@ interface PaymentDraft {
 }
 
 let serviceKeys = 0;
+
+/** What an unfinished bill keeps on this computer (not a correction: that starts from the bill). */
+interface DraftState {
+  billKey: string;
+  client: ClientRow | null;
+  clientText: string;
+  newPhone: string;
+  allowDuplicate: boolean;
+  serviceLines: ServiceLine[];
+  lines: Line[];
+  useStandard: boolean;
+  discountKind: DiscountKind;
+  discountText: string;
+  split: boolean;
+  payments: PaymentDraft[];
+  receivedText: string;
+  note: string;
+}
 
 function discountOf(kind: DiscountKind, text: string): Discount | null {
   if (kind === 'NONE' || text.trim() === '') return { kind: 'NONE' };
@@ -137,21 +156,26 @@ const fromCatalog = (service: ServiceRow): ServiceLine => ({
  * right here and saved with the bill (DEC-034). All amounts are worked out in Rust.
  */
 export function NewBillPage({ initialClientId, correcting }: { initialClientId?: number | undefined; correcting?: BillDetail | undefined }) {
-  const { navigate, status } = useApp();
-  const [billKey, setBillKey] = useState(newBillKey);
+  const { navigate, status, session } = useApp();
+  // An unfinished bill from before (crash, restart, idle lock): only for a plain new bill.
+  const [restored] = useState(() => (correcting || initialClientId ? null : loadBillDraft<DraftState>(session.userId)));
+  const draft = restored?.state;
+  if (draft) serviceKeys = Math.max(serviceKeys, ...draft.serviceLines.map((s) => s.key));
+  const [draftNotice, setDraftNotice] = useState(restored !== null);
+  const [billKey, setBillKey] = useState(() => draft?.billKey ?? newBillKey());
   // Client: an existing one, or a new one typed here (name + mobile), saved at Finalize.
-  const [client, setClient] = useState<ClientRow | null>(null);
-  const [clientText, setClientText] = useState('');
-  const [newPhone, setNewPhone] = useState('');
-  const [allowDuplicate, setAllowDuplicate] = useState(false);
+  const [client, setClient] = useState<ClientRow | null>(draft?.client ?? null);
+  const [clientText, setClientText] = useState(draft?.clientText ?? '');
+  const [newPhone, setNewPhone] = useState(draft?.newPhone ?? '');
+  const [allowDuplicate, setAllowDuplicate] = useState(draft?.allowDuplicate ?? false);
   const [matches, setMatches] = useState<DuplicateMatch[]>([]);
   const [clientOptions, setClientOptions] = useState<ClientRow[]>([]);
   const [recentClients, setRecentClients] = useState<ClientRow[]>([]);
   // Consultations and procedures
   const [catalog, setCatalog] = useState<ServiceRow[]>([]);
-  const [serviceLines, setServiceLines] = useState<ServiceLine[]>(() => (correcting ? servicesFrom(correcting) : []));
+  const [serviceLines, setServiceLines] = useState<ServiceLine[]>(() => (correcting ? servicesFrom(correcting) : (draft?.serviceLines ?? [])));
   // Medicines and products
-  const [lines, setLines] = useState<Line[]>(() => (correcting ? linesFrom(correcting) : []));
+  const [lines, setLines] = useState<Line[]>(() => (correcting ? linesFrom(correcting) : (draft?.lines ?? [])));
   const [recentProducts, setRecentProducts] = useState<SaleProduct[]>([]);
   const [productText, setProductText] = useState('');
   const [productOptions, setProductOptions] = useState<SaleProduct[]>([]);
@@ -160,14 +184,14 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
   const [partial, setPartial] = useState<{ product: SaleProduct; requested: number } | null>(null);
   // Discount: the clinic's standard medicine discount is ticked by default (DEC-034).
   const [standardPercent, setStandardPercent] = useState(0);
-  const [useStandard, setUseStandard] = useState(true);
-  const [discountKind, setDiscountKind] = useState<DiscountKind>('NONE');
-  const [discountText, setDiscountText] = useState('');
+  const [useStandard, setUseStandard] = useState(draft?.useStandard ?? true);
+  const [discountKind, setDiscountKind] = useState<DiscountKind>(draft?.discountKind ?? 'NONE');
+  const [discountText, setDiscountText] = useState(draft?.discountText ?? '');
   // Payment
-  const [split, setSplit] = useState(false);
-  const [payments, setPayments] = useState<PaymentDraft[]>([{ method: 'CASH', amount: '', reference: '' }]);
-  const [receivedText, setReceivedText] = useState('');
-  const [note, setNote] = useState('');
+  const [split, setSplit] = useState(draft?.split ?? false);
+  const [payments, setPayments] = useState<PaymentDraft[]>(draft?.payments ?? [{ method: 'CASH', amount: '', reference: '' }]);
+  const [receivedText, setReceivedText] = useState(draft?.receivedText ?? '');
+  const [note, setNote] = useState(draft?.note ?? '');
   const [reason, setReason] = useState('');
   // The quote and the exact bill it was worked out for: Finalize waits until they match.
   const [quoted, setQuoted] = useState<{ quote: Quote; key: string } | null>(null);
@@ -294,6 +318,24 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
   const quoteKey = JSON.stringify([lineInputs, serviceInputs, discount, correcting?.bill.id ?? null]);
   const quote = quoted && quoted.key === quoteKey ? quoted.quote : null;
 
+  // Keep the unfinished bill on this computer (debounced). The same billKey is kept, so a bill
+  // that was in fact saved just before a crash is not saved twice. Removing every line drops it,
+  // but a bill opened from a client page leaves an older draft alone until something is added.
+  const ownsDraft = useRef(restored !== null);
+  useEffect(() => {
+    if (correcting) return;
+    const timer = window.setTimeout(() => {
+      if (lines.length + serviceLines.length > 0) {
+        ownsDraft.current = true;
+        const state: DraftState = { billKey, client, clientText, newPhone, allowDuplicate, serviceLines, lines, useStandard, discountKind, discountText, split, payments, receivedText, note };
+        saveBillDraft(session.userId, state);
+      } else if (ownsDraft.current) {
+        clearBillDraft(session.userId);
+      }
+    }, 500);
+    return () => window.clearTimeout(timer);
+  }, [correcting, session.userId, billKey, client, clientText, newPhone, allowDuplicate, serviceLines, lines, useStandard, discountKind, discountText, split, payments, receivedText, note]);
+
   // All money arithmetic happens in Rust: the screen asks for a quote whenever the bill changes.
   useEffect(() => {
     if (itemCount === 0 || discount === null || !servicesValid) {
@@ -392,6 +434,8 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
   const setLineQty = (productId: number, qty: number) => setLines((current) => current.map((l) => (l.product.productId === productId ? { ...l, qty: Math.max(0, qty) } : l)));
 
   const reset = () => {
+    if (!correcting) clearBillDraft(session.userId);
+    setDraftNotice(false);
     setBillKey(newBillKey());
     setLines([]);
     setServiceLines([]);
@@ -503,6 +547,19 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
         actions={itemCount > 0 ? <Button color="error" onClick={() => setConfirmClear(true)}>{t.billing.clear}</Button> : undefined}
       />
       <Stack spacing={2}>
+        {draftNotice && restored && (
+          <Alert
+            severity="info"
+            onClose={() => setDraftNotice(false)}
+            action={
+              <Button color="inherit" size="small" onClick={() => reset()}>
+                {t.billing.discardDraft}
+              </Button>
+            }
+          >
+            {t.billing.draftRestored(formatDateTime(restored.savedAt))}
+          </Alert>
+        )}
         {/* ---- Client ---- */}
         <Card variant="outlined">
           <CardContent>

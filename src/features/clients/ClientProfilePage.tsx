@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Alert, Box, Button, Card, CardContent, Divider, Stack, TextField, Typography } from '@mui/material';
 import { api } from '../../api';
 import { useApp } from '../../app/AppContext';
-import { EmptyState, ErrorAlert, Loading, PageHeader, useLoader } from '../../components/common';
+import { EmptyState, ErrorAlert, Loading, PageHeader, useLoader, rowActions } from '../../components/common';
 import { t } from '../../i18n/en';
 import { ageYears, formatDateTime, formatIsoDate } from '../../lib/dates';
 import { rupees } from '../../lib/money';
@@ -73,7 +73,7 @@ export function ClientProfilePage({ clientId }: { clientId: number }) {
             ) : (
               <Stack divider={<Divider />} spacing={1.5}>
                 {data.visits.map((v) => (
-                  <Box key={v.bill.id} sx={{ cursor: 'pointer' }} onClick={() => setOpenBill(v.bill.id)}>
+                  <Box key={v.bill.id} sx={{ cursor: 'pointer' }} {...rowActions(() => setOpenBill(v.bill.id))}>
                     <Stack direction="row" spacing={2} sx={{ alignItems: 'center' }}>
                       <Typography sx={{ fontWeight: 600, minWidth: 150 }}>{formatDateTime(v.bill.finalizedAt)}</Typography>
                       <Typography sx={{ minWidth: 170 }}>{v.bill.billNo}</Typography>

@@ -20,7 +20,7 @@ import {
 } from '@mui/material';
 import { api, errorField, type Category, type Supplier } from '../../api';
 import { useApp } from '../../app/AppContext';
-import { EmptyState, ErrorAlert, PageHeader, StatusChip, useLoader } from '../../components/common';
+import { EmptyState, ErrorAlert, PageHeader, StatusChip, useLoader, rowActions } from '../../components/common';
 import { t } from '../../i18n/en';
 
 type SupplierDraft = { id: number | null; name: string; phone: string; gstin: string; isActive: boolean };
@@ -47,7 +47,7 @@ export function CatalogPage() {
               <Table size="small">
                 <TableBody>
                   {(categories.data ?? []).map((c) => (
-                    <TableRow key={c.id} hover sx={{ cursor: 'pointer' }} onClick={() => setCategory(c)}>
+                    <TableRow key={c.id} hover sx={{ cursor: 'pointer' }} {...rowActions(() => setCategory(c))}>
                       <TableCell>{c.name}</TableCell>
                       <TableCell align="right">{!c.isActive && <StatusChip label={t.common.inactive} color="default" />}</TableCell>
                     </TableRow>
@@ -70,7 +70,7 @@ export function CatalogPage() {
               <Table size="small">
                 <TableBody>
                   {(suppliers.data ?? []).map((s: Supplier) => (
-                    <TableRow key={s.id} hover sx={{ cursor: 'pointer' }} onClick={() => setSupplier({ ...s })}>
+                    <TableRow key={s.id} hover sx={{ cursor: 'pointer' }} {...rowActions(() => setSupplier({ ...s }))}>
                       <TableCell>{s.name}</TableCell>
                       <TableCell>{s.phone}</TableCell>
                       <TableCell>{s.gstin}</TableCell>

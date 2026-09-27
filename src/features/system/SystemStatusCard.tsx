@@ -69,14 +69,20 @@ function SystemInfoTable({ info }: { info: SystemInfo }) {
     ['SQLite', `${db.sqliteVersion}, schema v${db.schemaVersion}, journal ${db.journalMode}`],
     ['Database file', info.databaseFile],
     ['Backups folder', info.backupDir],
+    ['Second backup copy', `${info.mirrorDir} (${info.mirrorBackups} files)`],
     ['Logs folder', info.logDir],
   ];
   return (
     <Stack spacing={2}>
-      <Stack direction="row" spacing={1}>
+      <Stack direction="row" sx={{ flexWrap: 'wrap', gap: 1 }}>
         <StatusChip ok={db.integrityOk} label="Integrity" />
         <StatusChip ok={db.journalMode.toLowerCase() === 'wal'} label="WAL" />
         <StatusChip ok={db.fts5Available} label="Fast search (FTS5)" />
+        <Chip
+          size="small"
+          color={info.diskEncryption === 'ON' ? 'success' : info.diskEncryption === 'OFF' ? 'error' : 'default'}
+          label={`Disk encryption: ${info.diskEncryption === 'ON' ? 'On' : info.diskEncryption === 'OFF' ? 'Off' : 'Unknown'}`}
+        />
       </Stack>
       <Table size="small">
         <TableBody>

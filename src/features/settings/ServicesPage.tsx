@@ -21,7 +21,7 @@ import {
 } from '@mui/material';
 import { api, errorField, type ServiceInput, type ServiceKind, type ServiceRow } from '../../api';
 import { useApp } from '../../app/AppContext';
-import { EmptyState, ErrorAlert, Loading, PageHeader, StatusChip, useLoader } from '../../components/common';
+import { EmptyState, ErrorAlert, Loading, PageHeader, StatusChip, useLoader, rowActions } from '../../components/common';
 import { t } from '../../i18n/en';
 import { paiseToInput, parseRupees, percentLabel, rupees } from '../../lib/money';
 
@@ -77,7 +77,7 @@ export function ServicesPage() {
                       </TableHead>
                       <TableBody>
                         {rows.map((s: ServiceRow) => (
-                          <TableRow key={s.id} hover sx={{ cursor: 'pointer' }} onClick={() => setEditing({ ...s })}>
+                          <TableRow key={s.id} hover sx={{ cursor: 'pointer' }} {...rowActions(() => setEditing({ ...s }))}>
                             <TableCell>{s.name}</TableCell>
                             <TableCell align="right">{rupees(s.defaultPricePaise)}</TableCell>
                             <TableCell align="right">{percentLabel(s.gstRateBp)}</TableCell>

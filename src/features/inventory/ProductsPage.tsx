@@ -22,7 +22,7 @@ import {
 } from '@mui/material';
 import { api, type BatchRow, type ProductRow, type StockFilter } from '../../api';
 import { useApp } from '../../app/AppContext';
-import { ConfirmDialog, EmptyState, ErrorAlert, Loading, PageHeader, StatusChip, useLoader } from '../../components/common';
+import { ConfirmDialog, EmptyState, ErrorAlert, Loading, PageHeader, StatusChip, useLoader, rowActions } from '../../components/common';
 import { t } from '../../i18n/en';
 import { addDaysIso, formatExpiry, todayIso } from '../../lib/dates';
 import { rupees } from '../../lib/money';
@@ -116,7 +116,7 @@ export function ProductsPage() {
                 const hasExpired = p.totalQty > p.sellableQty;
                 const expiresSoon = p.nextExpiry !== null && p.nextExpiry <= soon;
                 return (
-                  <TableRow key={p.id} hover sx={{ cursor: 'pointer' }} onClick={() => setDetail(p.id)}>
+                  <TableRow key={p.id} hover sx={{ cursor: 'pointer' }} {...rowActions(() => setDetail(p.id))}>
                     <TableCell>
                       {p.name}
                       {p.genericName && <Typography component="span" color="text.secondary"> · {p.genericName}</Typography>} {!p.isActive && <StatusChip label={t.common.inactive} color="default" />}

@@ -1,6 +1,42 @@
 # Changelog
 
-## v0.4.1 (unreleased): hardening after the full review (2026-09-27)
+## v0.4.2 (unreleased): drafts, keyboard use, dashboard that adds up, CI hardening (2026-09-27)
+
+### Billing
+- **Unfinished bills are kept:**
+  - a bill being typed survives a crash, a restart or the idle lock, and comes back with a notice and a **Discard** button;
+  - it keeps the same bill key, so a bill saved just before a crash is never saved twice;
+  - it is removed at Finalize, Clear bill and sign-out (one per user; not for corrections).
+- **Keyboard:** every clickable row and dashboard tile can be reached with Tab and opened with Enter or Space, with a visible focus outline.
+
+### Dashboard and system
+- **Sales by type** now adds up: parts + round-off = total billed, − refunds = net.
+- **Disk encryption:**
+  - Backup & system shows whether FileVault (Mac) or BitLocker (Windows) is on;
+  - administrators see a dashboard warning when it is off.
+  - Backups themselves are not encrypted (owner decision, DEC-038).
+- Backup & system also shows the second backup folder and how many copies it holds.
+
+### Build and supply chain
+- **GitHub Actions:**
+  - every action is pinned to a commit SHA;
+  - Dependabot proposes weekly updates for actions, npm and Rust crates.
+- **Blocking checks:**
+  - **cargo-deny** blocks the build on a known vulnerability or an unknown crate source;
+  - `npm audit` now also covers development packages.
+- **Clippy and rustfmt** run as reports for now; they will block once their findings are fixed.
+- **Release builds** never reuse a cache. Both resolved Cargo.lock files (Windows, macOS) are uploaded and attached to releases.
+
+### Tests
+- **Screen tests** (Vitest + Testing Library) for the bill screen:
+  - standard discount on and off;
+  - no discount without medicines;
+  - a phone number as a name blocks Save;
+  - draft restore, autosave and discard;
+  - keyboard row activation.
+- **Rust test:** the dashboard split reconciles with totals and refunds.
+
+## v0.4.1 (2026-09-27): hardening after the full review
 
 ### Security
 - **Discount approval:**
