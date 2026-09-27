@@ -4,13 +4,13 @@
 use clinic_core::auth::Permission;
 use clinic_core::time::{Date, local_day_start_utc};
 use clinic_sqlite::Database;
-use clinic_sqlite::repo::billing::{self as bills, BillQuery, BillRow, MethodTotal, ProductSales, SalesTotals};
+use clinic_sqlite::repo::billing::{self as bills, BillQuery, BillRow, MethodTotal, ProductSales, SalesTotals, SectionSales, ServiceSales};
 use clinic_sqlite::repo::clients::{self, ClientRow};
 use clinic_sqlite::repo::inventory::{self as stock, BatchRow, ProductQuery, ProductRow};
 use serde::{Deserialize, Serialize};
 
 use crate::error::invalid;
-use crate::inventory::EXPIRY_WARNING_DAYS;
+use crate::inventory::{EXPIRY_WARNING_DAYS, ExpiringBatch};
 use crate::settings::clinic_today;
 use crate::{ServiceError, Session, users};
 
@@ -22,10 +22,16 @@ pub struct Dashboard {
     pub sales_today: SalesTotals,
     /// Total minus refunds.
     pub net_sales_today_paise: i64,
+    /// Today's sales split into consultation / procedures / medicines.
+    pub sales_split_today: SectionSales,
     pub active_products: i64,
     pub low_stock: i64,
     pub out_of_stock: i64,
     pub expiring_soon: i64,
+    /// Out-of-stock products first, then low stock (a few of each, for the dashboard list).
+    pub stock_alerts: Vec<ProductRow>,
+    /// Expired or expiring within 30 days, soonest first (a few, for the dashboard list).
+    pub expiring_batches: Vec<ExpiringBatch>,
     pub recent_bills: Vec<BillRow>,
     pub recent_clients: Vec<ClientRow>,
     /// For administrators: false means no second admin exists for password recovery (DEC-025).
@@ -42,25 +48,65 @@ pub fn dashboard(db: &Database, actor: &Session, now: i64) -> Result<Dashboard, 
         let start = local_day_start_utc(today, clinic.utc_offset_minutes);
         let sales = bills::sales_totals(c, start, start + 86_400)?;
         let today_text = today.to_string();
-        let count = |filter: &str| -> Result<i64, ServiceError> {
-            let rows = stock::query_products(
+        let products = |filter: &str| -> Result<Vec<ProductRow>, ServiceError> {
+            Ok(stock::query_products(
                 c,
                 &ProductQuery { text: "", category_id: None, active_only: true, stock: filter, product_id: None, today: &today_text, limit: 100_000 },
-            )?;
-            Ok(rows.len() as i64)
+            )?)
         };
+        let out = products("OUT")?;
+        let low = products("LOW")?;
+        let until = today.add_days(EXPIRY_WARNING_DAYS).to_string();
+        let expiring_batches = stock::expiring_batches(c, &until)?
+            .into_iter()
+            .take(8)
+            .map(|batch| {
+                let days_left = batch.expiry_date.as_deref().and_then(Date::parse).map_or(0, |e| e.days_since_epoch() - today.days_since_epoch());
+                ExpiringBatch { batch, days_left }
+            })
+            .collect();
         Ok(Dashboard {
             today: today.display(),
             net_sales_today_paise: sales.total_paise - sales.returned_paise,
             sales_today: sales,
+            sales_split_today: bills::section_sales(c, start, start + 86_400)?,
             active_products: stock::count_active_products(c)?,
-            low_stock: count("LOW")?,
-            out_of_stock: count("OUT")?,
-            expiring_soon: stock::count_expiring(c, &today_text, &today.add_days(EXPIRY_WARNING_DAYS).to_string())?,
+            low_stock: low.len() as i64,
+            out_of_stock: out.len() as i64,
+            expiring_soon: stock::count_expiring(c, &today_text, &until)?,
+            stock_alerts: out.iter().take(5).chain(low.iter().take(5)).cloned().collect(),
+            expiring_batches,
             recent_bills: bills::list_bills(c, &BillQuery { from: None, to: None, status: None, client_id: None, text: "", limit: 8 })?,
             recent_clients: clients::search(c, "", false, 8)?,
             has_backup_admin,
             ledger_problems: if actor.role.allows(Permission::ViewSystemInfo) { stock::ledger_mismatches(c)?.len() } else { 0 },
+        })
+    })
+}
+
+/// What sells most in a period: medicines, procedures and consultations (top 10 each).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TopSellers {
+    pub split: SectionSales,
+    pub medicines: Vec<ProductSales>,
+    pub procedures: Vec<ServiceSales>,
+    pub consultations: Vec<ServiceSales>,
+}
+
+/// For the dashboard (every signed-in user): Today / Last 7 days / This month.
+pub fn top_sellers(db: &Database, actor: &Session, range: &DateRange) -> Result<TopSellers, ServiceError> {
+    actor.require(Permission::UseApp)?;
+    db.read(|c| {
+        let (clinic, _) = clinic_today(c, 0)?;
+        let (from, to) = range_bounds(range, clinic.utc_offset_minutes)?;
+        let services = bills::service_sales(c, from, to)?;
+        let of_kind = |kind: &str| services.iter().filter(|s| s.kind == kind).take(10).cloned().collect::<Vec<_>>();
+        Ok(TopSellers {
+            split: bills::section_sales(c, from, to)?,
+            medicines: bills::product_sales(c, from, to)?.into_iter().take(10).collect(),
+            procedures: of_kind("PROCEDURE"),
+            consultations: of_kind("CONSULTATION"),
         })
     })
 }

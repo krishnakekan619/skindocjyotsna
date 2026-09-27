@@ -508,6 +508,53 @@ pub fn sales_totals(conn: &Connection, from: i64, to: i64) -> rusqlite::Result<S
     )
 }
 
+/// Sales of bills finalized in a period, split by what was sold (after discounts).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SectionSales {
+    pub consultation_paise: i64,
+    pub procedures_paise: i64,
+    pub medicines_paise: i64,
+}
+
+pub fn section_sales(conn: &Connection, from: i64, to: i64) -> rusqlite::Result<SectionSales> {
+    conn.query_row(
+        "SELECT
+            (SELECT COALESCE(SUM(s.line_total_paise), 0) FROM bill_service_item s JOIN bill b ON b.id = s.bill_id
+             WHERE b.status = 'FINALIZED' AND b.finalized_at >= ?1 AND b.finalized_at < ?2 AND s.kind = 'CONSULTATION'),
+            (SELECT COALESCE(SUM(s.line_total_paise), 0) FROM bill_service_item s JOIN bill b ON b.id = s.bill_id
+             WHERE b.status = 'FINALIZED' AND b.finalized_at >= ?1 AND b.finalized_at < ?2 AND s.kind = 'PROCEDURE'),
+            (SELECT COALESCE(SUM(i.line_total_paise), 0) FROM bill_item i JOIN bill b ON b.id = i.bill_id
+             WHERE b.status = 'FINALIZED' AND b.finalized_at >= ?1 AND b.finalized_at < ?2)",
+        params![from, to],
+        |r| Ok(SectionSales { consultation_paise: r.get(0)?, procedures_paise: r.get(1)?, medicines_paise: r.get(2)? }),
+    )
+}
+
+/// How often each consultation / procedure was billed, and for how much.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceSales {
+    pub service_id: i64,
+    pub kind: String,
+    pub name: String,
+    pub qty: i64,
+    pub revenue_paise: i64,
+}
+
+/// For bills finalized in [from, to), highest revenue first.
+pub fn service_sales(conn: &Connection, from: i64, to: i64) -> rusqlite::Result<Vec<ServiceSales>> {
+    let mut stmt = conn.prepare(
+        "SELECT s.service_id, s.kind, MAX(s.name), SUM(s.qty), SUM(s.line_total_paise)
+         FROM bill_service_item s JOIN bill b ON b.id = s.bill_id
+         WHERE b.status = 'FINALIZED' AND b.finalized_at >= ?1 AND b.finalized_at < ?2
+         GROUP BY s.service_id, s.kind
+         ORDER BY 5 DESC, 4 DESC",
+    )?;
+    stmt.query_map(params![from, to], |r| Ok(ServiceSales { service_id: r.get(0)?, kind: r.get(1)?, name: r.get(2)?, qty: r.get(3)?, revenue_paise: r.get(4)? }))?
+        .collect()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MethodTotal {

@@ -1,6 +1,20 @@
 # Changelog
 
-## v0.3.0 (unreleased): receptionist-first billing
+## v0.3.1 (unreleased): faster desk billing and a richer dashboard
+
+- **New client on the bill:** type the name; if the client exists, pick them from the suggestions. If not, type the **mobile number** next to it. The client is saved together with the bill at Finalize, with no popup and no Clients tab. If the name or phone already belongs to someone, the screen shows them with **Use**, or you can confirm it's a different person.
+- **Consultations and procedures typed on the bill:** type the name like a client name. List entries fill in their usual price; a new name gets the amount you type and joins the list for next time. **+ Consultation ₹500** still adds the standard one in one click.
+- **Any amount can be charged:** a lower-than-usual consultation or procedure amount no longer needs an administrator (DEC-034).
+- **Standard 10% discount on medicines:** ticked automatically on every bill. Untick it to give a different % or ₹ discount, or none. Change the % in Clinic details (0 = off; never above the receptionist limit).
+- **GST:** prices are entered including GST and nothing is added on the bill. Price fields now say "incl. GST".
+- **Dashboard:**
+  - sales split into **Consultation / Procedures / Medicines**, with shares;
+  - **What sells most**, for Today, Last 7 days or This month;
+  - clients today;
+  - **stock to reorder** (out of stock and low stock);
+  - **expiring medicines** (expired or within 30 days).
+
+## v0.3.0 (2026-09-26): receptionist-first billing
 
 ### New
 - **Navigation:** three big buttons at the top of the menu: **+ New Bill** (Ctrl/⌘+N), **Clients**, **Products & stock**.

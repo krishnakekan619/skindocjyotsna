@@ -81,6 +81,7 @@ export const tauriApi: ClinicApi = {
   salesReport: (range) => call('sales_report', { range }),
   productSalesReport: (range) => call('product_sales_report', { range }),
   stockReport: () => call('stock_report'),
+  topSellers: (range) => call('top_sellers', { range }),
 
   getSystemInfo: () => call('get_system_info'),
   getHealth: () => call('get_health'),

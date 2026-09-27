@@ -140,6 +140,7 @@ pub fn run() {
             commands::reports::sales_report,
             commands::reports::product_sales_report,
             commands::reports::stock_report,
+            commands::reports::top_sellers,
             commands::system::get_system_info,
             commands::system::get_health,
             commands::system::list_backups,

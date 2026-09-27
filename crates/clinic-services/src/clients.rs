@@ -93,43 +93,67 @@ pub fn save(db: &mut Database, actor: &Session, input: ClientInput, now: i64) ->
     actor.require(Permission::ManageClients)?;
     db.write(|c| {
         verify_actor(c, actor)?;
-        let (_, today) = clinic_today(c, now)?;
-        let dob = validate(&input, today)?;
-        if input.id.is_none() && !input.allow_duplicate {
-            // Checked here as well as in the screen, so no path creates an unconfirmed duplicate.
-            if let Some(existing) = find_duplicates(c, &input.full_name, &input.phone, dob.as_deref(), None)?.into_iter().find(|m| m.strong) {
-                return Err(ServiceError::PossibleDuplicate(format!(
-                    "{} ({}) has the same {}. Use the existing client, or confirm that this is a different person.",
-                    existing.client.full_name,
-                    existing.client.client_code,
-                    if existing.reason == "PHONE" { "phone number" } else { "name" }
-                )));
-            }
-        }
-        let fields = ClientFields {
-            full_name: input.full_name.trim(),
-            phone: input.phone.trim(),
-            email: input.email.trim(),
-            date_of_birth: dob.as_deref(),
-            gender: &input.gender,
-            address: input.address.trim(),
-            emergency_contact: input.emergency_contact.trim(),
-            notes: input.notes.trim(),
-            is_active: input.is_active,
-        };
-        let (id, action) = match input.id {
-            Some(id) if repo::update(c, id, &fields, now)? == 1 => (id, "CLIENT_UPDATE"),
-            Some(_) => return Err(ServiceError::NotFound("client")),
-            None => {
-                let code = format!("CL-{:06}", next_number(c, "CLIENT", "ALL")?);
-                (repo::insert(c, &code, &fields, now)?, "CLIENT_CREATE")
-            }
-        };
-        let client = repo::find(c, id)?.ok_or(ServiceError::NotFound("client"))?;
-        // Audit by client code only: no names or phone numbers in the audit log.
-        audit::record(c, now, Actor::from(actor), action, Some(("client", id.to_string())), Some(json!({ "code": client.client_code })))?;
-        Ok(client)
+        save_in_tx(c, actor, &input, now)
     })
+}
+
+/// A client typed on the New Bill screen (name and phone only), created in the bill's own
+/// transaction at Finalize, so an abandoned bill never leaves a half-made client (DEC-034).
+pub(crate) fn create_for_bill(c: &Connection, actor: &Session, full_name: &str, phone: &str, allow_duplicate: bool, now: i64) -> Result<i64, ServiceError> {
+    actor.require(Permission::ManageClients)?;
+    let input = ClientInput {
+        id: None,
+        full_name: full_name.to_string(),
+        phone: phone.to_string(),
+        email: String::new(),
+        date_of_birth: None,
+        gender: undisclosed(),
+        address: String::new(),
+        emergency_contact: String::new(),
+        notes: String::new(),
+        is_active: true,
+        allow_duplicate,
+    };
+    Ok(save_in_tx(c, actor, &input, now)?.id)
+}
+
+fn save_in_tx(c: &Connection, actor: &Session, input: &ClientInput, now: i64) -> Result<ClientRow, ServiceError> {
+    let (_, today) = clinic_today(c, now)?;
+    let dob = validate(input, today)?;
+    if input.id.is_none() && !input.allow_duplicate {
+        // Checked here as well as in the screen, so no path creates an unconfirmed duplicate.
+        if let Some(existing) = find_duplicates(c, &input.full_name, &input.phone, dob.as_deref(), None)?.into_iter().find(|m| m.strong) {
+            return Err(ServiceError::PossibleDuplicate(format!(
+                "{} ({}) has the same {}. Use the existing client, or confirm that this is a different person.",
+                existing.client.full_name,
+                existing.client.client_code,
+                if existing.reason == "PHONE" { "phone number" } else { "name" }
+            )));
+        }
+    }
+    let fields = ClientFields {
+        full_name: input.full_name.trim(),
+        phone: input.phone.trim(),
+        email: input.email.trim(),
+        date_of_birth: dob.as_deref(),
+        gender: &input.gender,
+        address: input.address.trim(),
+        emergency_contact: input.emergency_contact.trim(),
+        notes: input.notes.trim(),
+        is_active: input.is_active,
+    };
+    let (id, action) = match input.id {
+        Some(id) if repo::update(c, id, &fields, now)? == 1 => (id, "CLIENT_UPDATE"),
+        Some(_) => return Err(ServiceError::NotFound("client")),
+        None => {
+            let code = format!("CL-{:06}", next_number(c, "CLIENT", "ALL")?);
+            (repo::insert(c, &code, &fields, now)?, "CLIENT_CREATE")
+        }
+    };
+    let client = repo::find(c, id)?.ok_or(ServiceError::NotFound("client"))?;
+    // Audit by client code only: no names or phone numbers in the audit log.
+    audit::record(c, now, Actor::from(actor), action, Some(("client", id.to_string())), Some(json!({ "code": client.client_code })))?;
+    Ok(client)
 }
 
 // ---- Search (typo tolerant) --------------------------------------------------------------------

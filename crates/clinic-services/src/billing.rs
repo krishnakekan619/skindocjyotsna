@@ -18,7 +18,7 @@ use clinic_sqlite::repo::billing::{
 };
 use clinic_sqlite::repo::clients;
 use clinic_sqlite::repo::inventory::{self as stock, Movement, ProductRow};
-use clinic_sqlite::repo::services::{self as catalog, ServiceRow};
+use clinic_sqlite::repo::services::{self as catalog, ServiceFields, ServiceRow};
 use clinic_sqlite::repo::users;
 use clinic_sqlite::rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -26,7 +26,7 @@ use serde_json::json;
 
 use crate::audit::{self, Actor};
 use crate::auth::{role_of, verify_actor};
-use crate::catalog::MAX_PRICE_PAISE;
+use crate::catalog::{MAX_PRICE_PAISE, SERVICE_KINDS};
 use crate::error::invalid;
 use crate::inventory::{EXPIRY_WARNING_DAYS, batch_stock};
 use crate::settings::{ClinicSettings, clinic_today};
@@ -56,16 +56,34 @@ pub struct BillLineInput {
     pub not_supplied_qty: i64,
 }
 
-/// A consultation or procedure on the bill. `unit_price_paise`: the price charged; `None` =
-/// the catalog price. Below the catalog price needs an administrator's approval.
+/// A consultation or procedure on the bill: one from the list (`service_id`), or a name typed at
+/// the desk (`kind` + `name`), which joins the list at Finalize (DEC-034). `unit_price_paise`:
+/// the amount charged; `None` = the usual price.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ServiceLineInput {
-    pub service_id: i64,
+    #[serde(default)]
+    pub service_id: Option<i64>,
+    #[serde(default)]
+    pub kind: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
     #[serde(default = "one")]
     pub qty: i64,
     #[serde(default)]
     pub unit_price_paise: Option<i64>,
+}
+
+/// A client typed on the New Bill screen (not yet saved): created at Finalize.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NewClientInput {
+    pub full_name: String,
+    #[serde(default)]
+    pub phone: String,
+    /// The receptionist saw a possible existing client and chose to create a new one anyway.
+    #[serde(default)]
+    pub allow_duplicate: bool,
 }
 
 fn one() -> i64 {
@@ -95,6 +113,9 @@ pub struct BillInput {
     /// Created by the New Bill screen once per bill; repeated submits return the same bill.
     pub idempotency_key: String,
     pub client_id: Option<i64>,
+    /// When `client_id` is empty: a new client typed on the bill, saved together with it.
+    #[serde(default)]
+    pub new_client: Option<NewClientInput>,
     /// Medicines and products.
     #[serde(default)]
     pub lines: Vec<BillLineInput>,
@@ -192,18 +213,13 @@ fn plan_items(c: &Connection, lines: &[BillLineInput], today: Date, give_back: &
     Ok(items)
 }
 
-/// A consultation or procedure as it will be stored.
+/// A consultation or procedure as it will be stored. A name typed at the desk that is not in the
+/// list yet has `service.id == 0` until Finalize adds it.
 #[derive(Debug, Clone)]
 struct PlannedService {
     service: ServiceRow,
     qty: i64,
     unit_price: i64,
-}
-
-impl PlannedService {
-    fn below_default(&self) -> bool {
-        self.unit_price < self.service.default_price_paise
-    }
 }
 
 fn plan_services(c: &Connection, inputs: &[ServiceLineInput]) -> Result<Vec<PlannedService>, ServiceError> {
@@ -212,9 +228,35 @@ fn plan_services(c: &Connection, inputs: &[ServiceLineInput]) -> Result<Vec<Plan
     }
     let mut planned = Vec::with_capacity(inputs.len());
     for input in inputs {
-        let service = catalog::find(c, input.service_id)?
-            .filter(|s| s.is_active)
-            .ok_or_else(|| ServiceError::NotAllowed("Unable to complete the operation. The selected consultation or procedure is no longer available.".into()))?;
+        let service = match input.service_id {
+            Some(id) => catalog::find(c, id)?
+                .filter(|s| s.is_active)
+                .ok_or_else(|| ServiceError::NotAllowed("Unable to complete the operation. The selected consultation or procedure is no longer available.".into()))?,
+            None => {
+                let kind = input
+                    .kind
+                    .as_deref()
+                    .filter(|k| SERVICE_KINDS.contains(k))
+                    .ok_or_else(|| invalid("services", "Choose consultation or procedure."))?;
+                let name = input
+                    .name
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|n| !n.is_empty() && n.chars().count() <= 80)
+                    .ok_or_else(|| invalid("services", "Type the consultation or procedure name (at most 80 characters)."))?;
+                // Typed but already in the list (any case): use that entry.
+                catalog::find_by_name(c, kind, name)?.unwrap_or_else(|| ServiceRow {
+                    id: 0,
+                    kind: kind.to_string(),
+                    name: name.to_string(),
+                    default_price_paise: input.unit_price_paise.unwrap_or(0),
+                    gst_rate_bp: 0,
+                    discount_eligible: false,
+                    is_active: true,
+                    sort_order: 100,
+                })
+            }
+        };
         if !(1..=100).contains(&input.qty) {
             return Err(invalid("services", "Each consultation or procedure needs a quantity from 1 to 100."));
         }
@@ -331,8 +373,7 @@ pub struct Quote {
     pub round_off_paise: i64,
     pub total_paise: i64,
     pub discount_rate_bp: u32,
-    /// An administrator must approve (discount above the receptionist limit, or a price below
-    /// the standard fee).
+    /// The discount is above the receptionist limit: an administrator must approve it.
     pub needs_approval: bool,
 }
 
@@ -421,7 +462,6 @@ pub fn quote(
         let (consultation_paise, procedures_paise, products_paise) = priced.section_totals();
         let t = &priced.totals;
         let rate = discount_rate(discount, t);
-        let below_default = priced.services.iter().any(PlannedService::below_default);
         Ok(Quote {
             lines: quote_lines,
             service_lines,
@@ -435,7 +475,7 @@ pub fn quote(
             round_off_paise: t.round_off.value(),
             total_paise: t.total.value(),
             discount_rate_bp: rate,
-            needs_approval: needs_approval(actor, rate, &clinic) || (actor.role != Role::Admin && below_default),
+            needs_approval: needs_approval(actor, rate, &clinic),
         })
     })
 }
@@ -456,12 +496,14 @@ pub struct BillDetail {
 /// The bill already saved under this idempotency key, if any. A repeat (double-click, retry
 /// after a timeout) comes from the same user for the same client and the same correction; a key
 /// reused for anything else is refused instead of silently returning an unrelated bill.
-fn bill_for_key(c: &Connection, key: &str, actor: &Session, client_id: Option<i64>, replaces: Option<i64>) -> Result<Option<i64>, ServiceError> {
+fn bill_for_key(c: &Connection, key: &str, actor: &Session, input: &BillInput, replaces: Option<i64>) -> Result<Option<i64>, ServiceError> {
     let Some(bill_id) = repo::find_bill_id_by_key(c, key)? else {
         return Ok(None);
     };
     let bill = repo::find_bill(c, bill_id)?.ok_or(ServiceError::NotFound("bill"))?;
-    if bill.created_by != actor.user_id || bill.client_id != client_id || bill.replaces_bill_id != replaces {
+    // A client typed on the bill was created by the first attempt, so the retry cannot know its id.
+    let client_matches = bill.client_id == input.client_id || (input.client_id.is_none() && input.new_client.is_some());
+    if bill.created_by != actor.user_id || !client_matches || bill.replaces_bill_id != replaces {
         return Err(ServiceError::NotAllowed("This bill was already saved with different details. Clear the bill and start again.".into()));
     }
     Ok(Some(bill_id))
@@ -498,11 +540,17 @@ fn approve(c: &Connection, approval: Option<&Approval>, missing: ServiceError) -
 /// Creates the bill inside the caller's transaction and returns its id.
 fn finalize_in_tx(c: &Connection, actor: &Session, input: &BillInput, now: i64, replaces: Option<i64>) -> Result<i64, ServiceError> {
     let (clinic, today) = clinic_today(c, now)?;
-    if let Some(client_id) = input.client_id {
-        if !clients::find(c, client_id)?.is_some_and(|client| client.is_active) {
-            return Err(ServiceError::NotAllowed("Unable to complete the operation. The selected client is no longer available.".into()));
+    let client_id = match (input.client_id, &input.new_client) {
+        (Some(client_id), _) => {
+            if !clients::find(c, client_id)?.is_some_and(|client| client.is_active) {
+                return Err(ServiceError::NotAllowed("Unable to complete the operation. The selected client is no longer available.".into()));
+            }
+            Some(client_id)
         }
-    }
+        // Typed on the bill: saved now, in this same transaction (all or nothing with the bill).
+        (None, Some(new)) => Some(crate::clients::create_for_bill(c, actor, &new.full_name, &new.phone, new.allow_duplicate, now)?),
+        (None, None) => None,
+    };
     let note = input.note.trim();
     if chars(note) > 200 {
         return Err(invalid("note", "Note must be at most 200 characters."));
@@ -511,11 +559,8 @@ fn finalize_in_tx(c: &Connection, actor: &Session, input: &BillInput, now: i64, 
     let totals = &priced.totals;
 
     let rate = discount_rate(input.discount, totals);
-    let below_default = actor.role != Role::Admin && priced.services.iter().any(PlannedService::below_default);
     let approved_by = if needs_approval(actor, rate, &clinic) {
         Some(approve(c, input.approval.as_ref(), ServiceError::DiscountApprovalRequired { cap_percent: clinic.receptionist_discount_cap_percent })?)
-    } else if below_default {
-        Some(approve(c, input.approval.as_ref(), ServiceError::PriceApprovalRequired)?)
     } else {
         None
     };
@@ -545,7 +590,7 @@ fn finalize_in_tx(c: &Connection, actor: &Session, input: &BillInput, now: i64, 
         &NewBill {
             bill_no: &bill_no,
             idempotency_key: &input.idempotency_key,
-            client_id: input.client_id,
+            client_id,
             subtotal_paise: totals.subtotal.value(),
             discount_paise: totals.discount.value(),
             tax_paise: totals.tax.value(),
@@ -591,14 +636,41 @@ fn finalize_in_tx(c: &Connection, actor: &Session, input: &BillInput, now: i64, 
             }
         }
     }
-    // Consultations and procedures: no stock involved.
+    // Consultations and procedures: no stock involved. Names typed at the desk join the list.
     for (index, (planned, line)) in priced.services.iter().zip(&priced.service_lines).enumerate() {
+        let service_id = match planned.service.id {
+            0 => match catalog::find_by_name(c, &planned.service.kind, &planned.service.name)? {
+                Some(existing) => existing.id, // the same new name twice on one bill
+                None => {
+                    let fields = ServiceFields {
+                        kind: &planned.service.kind,
+                        name: &planned.service.name,
+                        default_price_paise: planned.unit_price,
+                        gst_rate_bp: 0,
+                        discount_eligible: false,
+                        is_active: true,
+                        sort_order: 100,
+                    };
+                    let id = catalog::insert(c, &fields, now)?;
+                    audit::record(
+                        c,
+                        now,
+                        Actor::from(actor),
+                        "SERVICE_CREATE",
+                        Some(("service", id.to_string())),
+                        Some(json!({ "kind": planned.service.kind, "name": planned.service.name, "price": planned.unit_price, "addedOnBill": true })),
+                    )?;
+                    id
+                }
+            },
+            id => id,
+        };
         repo::insert_service_item(
             c,
             &NewServiceItem {
                 bill_id,
                 line_no: index as i64 + 1,
-                service_id: planned.service.id,
+                service_id,
                 kind: &planned.service.kind,
                 name: &planned.service.name,
                 qty: planned.qty,
@@ -615,7 +687,7 @@ fn finalize_in_tx(c: &Connection, actor: &Session, input: &BillInput, now: i64, 
     for p in &input.payments {
         repo::insert_payment(c, &NewPayment { bill_id, method: &p.method, amount_paise: p.amount_paise, direction: "IN", reference: p.reference.trim(), sales_return_id: None, now })?;
     }
-    if let Some(client_id) = input.client_id {
+    if let Some(client_id) = client_id {
         clients::touch_visit(c, client_id, now)?;
     }
     audit::record(
@@ -635,7 +707,7 @@ pub fn finalize(db: &mut Database, actor: &Session, input: BillInput, now: i64) 
     validate_key(&input.idempotency_key)?;
     db.write(|c| {
         verify_actor(c, actor)?;
-        if let Some(existing) = bill_for_key(c, &input.idempotency_key, actor, input.client_id, None)? {
+        if let Some(existing) = bill_for_key(c, &input.idempotency_key, actor, &input, None)? {
             return load_detail(c, existing); // double-click, retry or restart: same bill
         }
         let bill_id = finalize_in_tx(c, actor, &input, now, None)?;
@@ -754,7 +826,7 @@ pub fn correct(db: &mut Database, actor: &Session, input: CorrectionInput, now: 
     let reason = validate_reason(&input.reason)?.to_string();
     db.write(|c| {
         verify_actor(c, actor)?;
-        if let Some(existing) = bill_for_key(c, &input.bill.idempotency_key, actor, input.bill.client_id, Some(input.original_bill_id))? {
+        if let Some(existing) = bill_for_key(c, &input.bill.idempotency_key, actor, &input.bill, Some(input.original_bill_id))? {
             return load_detail(c, existing);
         }
         let original = load_detail(c, input.original_bill_id)?;

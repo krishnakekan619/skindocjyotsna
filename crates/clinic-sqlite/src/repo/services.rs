@@ -55,6 +55,11 @@ pub fn find(conn: &Connection, id: i64) -> rusqlite::Result<Option<ServiceRow>> 
     conn.query_row(&format!("{SELECT} WHERE id = ?1"), [id], from_row).optional()
 }
 
+/// The entry of this kind with this name (case-insensitive), active or not.
+pub fn find_by_name(conn: &Connection, kind: &str, name: &str) -> rusqlite::Result<Option<ServiceRow>> {
+    conn.query_row(&format!("{SELECT} WHERE kind = ?1 AND name = ?2"), params![kind, name], from_row).optional()
+}
+
 /// Another entry of the same kind already uses this name (names are case-insensitive).
 pub fn name_taken(conn: &Connection, kind: &str, name: &str, exclude: Option<i64>) -> rusqlite::Result<bool> {
     conn.query_row(

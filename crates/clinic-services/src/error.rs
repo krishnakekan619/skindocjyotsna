@@ -37,9 +37,6 @@ pub enum ServiceError {
     InsufficientStock { product: String, available: i64 },
     #[error("discount above {cap_percent}% needs administrator approval")]
     DiscountApprovalRequired { cap_percent: u32 },
-    /// A consultation or procedure price below the catalog price needs an administrator.
-    #[error("a price below the standard fee needs administrator approval")]
-    PriceApprovalRequired,
     /// Creating this client would likely duplicate an existing one; the message is for staff.
     #[error("{0}")]
     PossibleDuplicate(String),

@@ -1,7 +1,7 @@
 //! Dashboard and reports.
 
 use clinic_core::auth::Permission;
-use clinic_services::reports::{self, Dashboard, DateRange, SalesReport, StockReport};
+use clinic_services::reports::{self, Dashboard, DateRange, SalesReport, StockReport, TopSellers};
 use clinic_sqlite::repo::billing::ProductSales;
 use tauri::State;
 
@@ -30,4 +30,11 @@ pub fn product_sales_report(state: State<'_, AppState>, range: DateRange) -> Res
 pub fn stock_report(state: State<'_, AppState>) -> Result<StockReport, CommandError> {
     let session = state.session(Permission::ViewReports)?;
     Ok(reports::stock(&*state.db()?, &session, now())?)
+}
+
+/// Top sellers and the consultation / procedures / medicines split for a period (dashboard).
+#[tauri::command(async)]
+pub fn top_sellers(state: State<'_, AppState>, range: DateRange) -> Result<TopSellers, CommandError> {
+    let session = state.session(Permission::UseApp)?;
+    Ok(reports::top_sellers(&*state.db()?, &session, &range)?)
 }

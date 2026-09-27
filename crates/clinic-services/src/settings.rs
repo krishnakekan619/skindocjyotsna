@@ -42,6 +42,9 @@ pub struct ClinicSettings {
     pub return_window_days: u32,
     /// Message typed in when a receipt is shared on WhatsApp (see `DEFAULT_WHATSAPP_MESSAGE`).
     pub whatsapp_message: String,
+    /// Discount (%) ticked by default on every bill's medicines; 0 = none (DEC-034). Never more
+    /// than the receptionist limit, so it never needs an approval.
+    pub default_medicine_discount_percent: u32,
 }
 
 impl Default for ClinicSettings {
@@ -60,6 +63,7 @@ impl Default for ClinicSettings {
             utc_offset_minutes: DEFAULT_UTC_OFFSET_MINUTES,
             return_window_days: 7,
             whatsapp_message: DEFAULT_WHATSAPP_MESSAGE.to_string(),
+            default_medicine_discount_percent: 10,
         }
     }
 }
@@ -84,6 +88,7 @@ impl ClinicSettings {
                 "" => DEFAULT_WHATSAPP_MESSAGE.to_string(),
                 text => text.to_string(),
             },
+            default_medicine_discount_percent: self.default_medicine_discount_percent,
         };
         settings.validate()?;
         Ok(settings)
@@ -127,6 +132,12 @@ impl ClinicSettings {
         }
         if !(0..=365).contains(&self.return_window_days) {
             return Err(invalid("returnWindowDays", "Return window must be 0 to 365 days."));
+        }
+        if self.default_medicine_discount_percent > self.receptionist_discount_cap_percent {
+            return Err(invalid(
+                "defaultMedicineDiscountPercent",
+                "The standard medicine discount cannot be higher than the receptionist discount limit.",
+            ));
         }
         if chars(&self.whatsapp_message) > 1_000 {
             return Err(invalid("whatsappMessage", "The WhatsApp message must be at most 1000 characters."));

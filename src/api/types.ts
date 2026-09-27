@@ -44,6 +44,8 @@ export interface ClinicSettings {
   returnWindowDays: number;
   /** Placeholders: {name} {clinic} {billNo} {total}. */
   whatsappMessage: string;
+  /** Ticked by default on every bill's medicines; 0 = none. At most the receptionist limit. */
+  defaultMedicineDiscountPercent: number;
 }
 
 /** clinic_services::auth::NewAccount */
@@ -335,16 +337,31 @@ export interface PaymentInput {
   reference: string;
 }
 
-/** A consultation or procedure; `unitPricePaise` null = the standard price. */
+/**
+ * A consultation or procedure: one from the list (`serviceId`), or a name typed on the bill
+ * (`serviceId` null + `kind` + `name`), which joins the list at Finalize.
+ * `unitPricePaise` null = the usual price.
+ */
 export interface ServiceLineInput {
-  serviceId: number;
+  serviceId: number | null;
+  kind: ServiceKind | null;
+  name: string | null;
   qty: number;
   unitPricePaise: Paise | null;
+}
+
+/** A client typed on the New Bill screen; saved together with the bill. */
+export interface NewClientInput {
+  fullName: string;
+  phone: string;
+  allowDuplicate: boolean;
 }
 
 export interface BillInput {
   idempotencyKey: string;
   clientId: number | null;
+  /** When `clientId` is null: a new client typed on the bill. */
+  newClient: NewClientInput | null;
   lines: BillLineInput[];
   services: ServiceLineInput[];
   discount: Discount;
@@ -588,14 +605,40 @@ export interface SalesTotals {
   clientsServed: number;
 }
 
+export interface SectionSales {
+  consultationPaise: Paise;
+  proceduresPaise: Paise;
+  medicinesPaise: Paise;
+}
+
+export interface ServiceSales {
+  serviceId: number;
+  kind: ServiceKind;
+  name: string;
+  qty: number;
+  revenuePaise: Paise;
+}
+
+export interface TopSellers {
+  split: SectionSales;
+  medicines: ProductSales[];
+  procedures: ServiceSales[];
+  consultations: ServiceSales[];
+}
+
 export interface Dashboard {
   today: string;
   salesToday: SalesTotals;
   netSalesTodayPaise: Paise;
+  salesSplitToday: SectionSales;
   activeProducts: number;
   lowStock: number;
   outOfStock: number;
   expiringSoon: number;
+  /** Out of stock first, then low stock (a few of each). */
+  stockAlerts: ProductRow[];
+  /** Expired or expiring within 30 days, soonest first. */
+  expiringBatches: ExpiringBatch[];
   recentBills: BillRow[];
   recentClients: ClientRow[];
   hasBackupAdmin: boolean;

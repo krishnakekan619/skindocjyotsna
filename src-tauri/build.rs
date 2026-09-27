@@ -58,6 +58,7 @@ const COMMANDS: &[&str] = &[
     "sales_report",
     "product_sales_report",
     "stock_report",
+    "top_sellers",
     "get_system_info",
     "get_health",
     "list_backups",

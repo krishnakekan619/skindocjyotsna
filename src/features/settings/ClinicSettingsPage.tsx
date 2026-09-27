@@ -71,6 +71,13 @@ export function ClinicSettingsPage() {
             <FormGrid>
               <TextField label={t.settings.invoicePrefix} value={draft.invoicePrefix} onChange={(e) => set({ invoicePrefix: e.target.value.toUpperCase() })} error={field === 'invoicePrefix'} />
               <TextField label={t.settings.discountCap} value={draft.receptionistDiscountCapPercent} onChange={(e) => set({ receptionistDiscountCapPercent: whole(e.target.value) })} error={field === 'receptionistDiscountCapPercent'} />
+              <TextField
+                label={t.settings.defaultDiscount}
+                value={draft.defaultMedicineDiscountPercent}
+                onChange={(e) => set({ defaultMedicineDiscountPercent: whole(e.target.value) })}
+                helperText={t.settings.defaultDiscountHint}
+                error={field === 'defaultMedicineDiscountPercent'}
+              />
               <TextField label={t.settings.idleLock} value={draft.idleLockMinutes} onChange={(e) => set({ idleLockMinutes: whole(e.target.value) })} error={field === 'idleLockMinutes'} />
               <TextField label={t.settings.returnWindow} value={draft.returnWindowDays} onChange={(e) => set({ returnWindowDays: whole(e.target.value) })} error={field === 'returnWindowDays'} />
               <TextField label={t.settings.utcOffset} value={draft.utcOffsetMinutes} onChange={(e) => set({ utcOffsetMinutes: signed(e.target.value) })} error={field === 'utcOffsetMinutes'} />

@@ -20,6 +20,7 @@ const DEFAULT_CLINIC: ClinicSettings = {
   returnWindowDays: 7,
   // Empty = the standard SkinDoc message (filled in by the app).
   whatsappMessage: '',
+  defaultMedicineDiscountPercent: 10,
 };
 
 /** First run only: clinic details, the owner account and (optionally) a second admin (DEC-025). */

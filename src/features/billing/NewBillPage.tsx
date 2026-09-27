@@ -4,17 +4,17 @@ import {
   Autocomplete,
   Box,
   Button,
-  ButtonGroup,
   Card,
   CardContent,
+  Checkbox,
   Chip,
   Dialog,
   DialogActions,
   DialogContent,
   DialogContentText,
   DialogTitle,
+  FormControlLabel,
   IconButton,
-  Menu,
   MenuItem,
   Stack,
   TextField,
@@ -31,6 +31,7 @@ import {
   type BillLineInput,
   type ClientRow,
   type Discount,
+  type DuplicateMatch,
   type PaymentMethod,
   type Quote,
   type SaleProduct,
@@ -43,7 +44,6 @@ import { ConfirmDialog, ErrorAlert, PageHeader } from '../../components/common';
 import { MOD_KEY, t } from '../../i18n/en';
 import { formatDateTime, formatExpiry, newBillKey } from '../../lib/dates';
 import { paiseToInput, parseRupees, rupees } from '../../lib/money';
-import { ClientDialog } from '../clients/ClientDialog';
 import { BillDetailDialog } from './BillDetailDialog';
 
 interface Line {
@@ -52,11 +52,16 @@ interface Line {
   notSuppliedQty: number;
 }
 
+/** A consultation or procedure: from the list (`serviceId`), or a name typed on the bill. */
 interface ServiceLine {
   key: number;
-  service: ServiceRow;
+  serviceId: number | null;
+  kind: ServiceKind;
+  name: string;
+  /** The usual price when it comes from the list. */
+  defaultPricePaise: number | null;
   qty: number;
-  /** Price as typed, in rupees. */
+  /** Amount as typed, in rupees. */
   price: string;
 }
 
@@ -66,10 +71,6 @@ interface PaymentDraft {
   amount: string;
   reference: string;
 }
-
-/** A client suggestion, or the "create new client" choice at the end of the list. */
-type ClientOption = ClientRow | { create: string };
-const isCreate = (o: ClientOption): o is { create: string } => 'create' in o;
 
 let serviceKeys = 0;
 
@@ -108,41 +109,47 @@ function linesFrom(detail: BillDetail): Line[] {
 }
 
 /** Starting consultation/procedure lines for a correction. */
-function servicesFrom(detail: BillDetail, catalog: ServiceRow[]): ServiceLine[] {
+function servicesFrom(detail: BillDetail): ServiceLine[] {
   return detail.services.map((s) => ({
     key: ++serviceKeys,
-    service: catalog.find((c) => c.id === s.serviceId) ?? {
-      id: s.serviceId,
-      kind: s.kind,
-      name: s.name,
-      defaultPricePaise: s.defaultPricePaise,
-      gstRateBp: s.gstRateBp,
-      discountEligible: s.discountEligible,
-      isActive: true,
-      sortOrder: 0,
-    },
+    serviceId: s.serviceId,
+    kind: s.kind,
+    name: s.name,
+    defaultPricePaise: s.defaultPricePaise,
     qty: s.qty,
     price: paiseToInput(s.unitPricePaise),
   }));
 }
 
+const fromCatalog = (service: ServiceRow): ServiceLine => ({
+  key: ++serviceKeys,
+  serviceId: service.id,
+  kind: service.kind,
+  name: service.name,
+  defaultPricePaise: service.defaultPricePaise,
+  qty: 1,
+  price: paiseToInput(service.defaultPricePaise),
+});
+
 /**
- * The receptionist's main screen (v0.3 brief §3-13): client, consultation, procedures and
- * medicines on ONE screen, then payment and Finalize. All amounts are worked out in Rust.
+ * The receptionist's main screen: client, consultation, procedures and medicines on ONE screen,
+ * then payment and Finalize. A new client, and new consultation/procedure names, are typed
+ * right here and saved with the bill (DEC-034). All amounts are worked out in Rust.
  */
 export function NewBillPage({ initialClientId, correcting }: { initialClientId?: number | undefined; correcting?: BillDetail | undefined }) {
-  const { notify, navigate } = useApp();
+  const { navigate } = useApp();
   const [billKey, setBillKey] = useState(newBillKey);
-  // Client
+  // Client: an existing one, or a new one typed here (name + mobile), saved at Finalize.
   const [client, setClient] = useState<ClientRow | null>(null);
   const [clientText, setClientText] = useState('');
+  const [newPhone, setNewPhone] = useState('');
+  const [allowDuplicate, setAllowDuplicate] = useState(false);
+  const [matches, setMatches] = useState<DuplicateMatch[]>([]);
   const [clientOptions, setClientOptions] = useState<ClientRow[]>([]);
   const [recentClients, setRecentClients] = useState<ClientRow[]>([]);
-  const [creatingClient, setCreatingClient] = useState<string | null>(null);
   // Consultations and procedures
   const [catalog, setCatalog] = useState<ServiceRow[]>([]);
-  const [serviceLines, setServiceLines] = useState<ServiceLine[]>([]);
-  const [menu, setMenu] = useState<{ kind: ServiceKind; anchor: HTMLElement } | null>(null);
+  const [serviceLines, setServiceLines] = useState<ServiceLine[]>(() => (correcting ? servicesFrom(correcting) : []));
   // Medicines and products
   const [lines, setLines] = useState<Line[]>(() => (correcting ? linesFrom(correcting) : []));
   const [recentProducts, setRecentProducts] = useState<SaleProduct[]>([]);
@@ -151,9 +158,12 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
   const [picked, setPicked] = useState<SaleProduct | null>(null);
   const [qtyText, setQtyText] = useState('1');
   const [partial, setPartial] = useState<{ product: SaleProduct; requested: number } | null>(null);
-  // Totals and payment
+  // Discount: the clinic's standard medicine discount is ticked by default (DEC-034).
+  const [standardPercent, setStandardPercent] = useState(0);
+  const [useStandard, setUseStandard] = useState(true);
   const [discountKind, setDiscountKind] = useState<DiscountKind>('NONE');
   const [discountText, setDiscountText] = useState('');
+  // Payment
   const [split, setSplit] = useState(false);
   const [payments, setPayments] = useState<PaymentDraft[]>([{ method: 'CASH', amount: '', reference: '' }]);
   const [receivedText, setReceivedText] = useState('');
@@ -169,24 +179,23 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
   const [confirmClear, setConfirmClear] = useState(false);
   const [done, setDone] = useState<{ detail: BillDetail; print: boolean } | null>(null);
   const clientInput = useRef<HTMLInputElement | null>(null);
+  const phoneInput = useRef<HTMLInputElement | null>(null);
   const productInput = useRef<HTMLInputElement | null>(null);
   const qtyInput = useRef<HTMLInputElement | null>(null);
 
-  // Catalog, recent clients and recent products: loaded once.
+  // Catalog, clinic settings, recent clients and recent products: loaded once.
   const loadShortcuts = useCallback(() => {
     api.searchClients('', false).then((rows) => setRecentClients(rows.slice(0, 8))).catch(() => undefined);
     api.recentProductsForSale().then(setRecentProducts).catch(() => undefined);
+    api.listServices(false).then(setCatalog).catch(() => undefined);
   }, []);
   useEffect(() => {
     loadShortcuts();
     api
-      .listServices(false)
-      .then((rows) => {
-        setCatalog(rows);
-        if (correcting) setServiceLines(servicesFrom(correcting, rows));
-      })
+      .getClinicSettings()
+      .then((s) => setStandardPercent(s.defaultMedicineDiscountPercent))
       .catch(() => undefined);
-  }, [loadShortcuts, correcting]);
+  }, [loadShortcuts]);
 
   // Preselected client (from the client screen or the bill being corrected).
   useEffect(() => {
@@ -196,13 +205,29 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
 
   // Client and product search: from the 2nd character, debounced, done in the database.
   useEffect(() => {
-    if (clientText.trim().length < 2) {
+    if (client || clientText.trim().length < 2) {
       setClientOptions([]);
       return;
     }
     const timer = window.setTimeout(() => api.searchClients(clientText, false).then((rows) => setClientOptions(rows.slice(0, 8))).catch(() => undefined), 200);
     return () => window.clearTimeout(timer);
-  }, [clientText]);
+  }, [clientText, client]);
+  // A new client being typed: is this person already a client (same phone or same name)?
+  useEffect(() => {
+    if (client || clientText.trim().length < 2) {
+      setMatches([]);
+      return;
+    }
+    const timer = window.setTimeout(
+      () =>
+        api
+          .checkClientDuplicates({ fullName: clientText, phone: newPhone, dateOfBirth: null, excludeId: null })
+          .then((found) => setMatches(found.filter((m) => m.strong)))
+          .catch(() => undefined),
+      400,
+    );
+    return () => window.clearTimeout(timer);
+  }, [clientText, newPhone, client]);
   useEffect(() => {
     if (!productText.trim()) {
       setProductOptions([]);
@@ -212,17 +237,21 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
     return () => window.clearTimeout(timer);
   }, [productText]);
 
-  const discount = discountOf(discountKind, discountText);
   const lineInputs: BillLineInput[] = useMemo(
     () => lines.filter((l) => l.qty + l.notSuppliedQty > 0).map((l) => ({ productId: l.product.productId, qty: l.qty, notSuppliedQty: l.notSuppliedQty })),
     [lines],
   );
-  const servicesValid = serviceLines.every((s) => s.qty > 0 && parseRupees(s.price || '0') !== null);
+  const hasProducts = lineInputs.some((l) => l.qty > 0);
+  const standardOn = useStandard && standardPercent > 0;
+  const discount: Discount | null = standardOn ? { kind: 'PERCENT', value: standardPercent * 100 } : discountOf(discountKind, discountText);
+  const servicesValid = serviceLines.every((s) => s.qty > 0 && s.price.trim() !== '' && parseRupees(s.price) !== null);
   const serviceInputs: ServiceLineInput[] = useMemo(
     () =>
       serviceLines.map((s) => {
         const paise = parseRupees(s.price || '0');
-        return { serviceId: s.service.id, qty: s.qty, unitPricePaise: paise === null || paise === s.service.defaultPricePaise ? null : paise };
+        return s.serviceId !== null
+          ? { serviceId: s.serviceId, kind: null, name: null, qty: s.qty, unitPricePaise: paise === null || paise === s.defaultPricePaise ? null : paise }
+          : { serviceId: null, kind: s.kind, name: s.name, qty: s.qty, unitPricePaise: paise };
       }),
     [serviceLines],
   );
@@ -257,7 +286,7 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
       window.clearTimeout(timer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [lineInputs, serviceInputs, discountKind, discountText, correcting, servicesValid]);
+  }, [lineInputs, serviceInputs, discountKind, discountText, standardOn, standardPercent, correcting, servicesValid]);
 
   const total = quote?.totalPaise ?? 0;
   const paymentDrafts: PaymentDraft[] = split ? payments : [{ method: payments[0]?.method ?? 'CASH', reference: payments[0]?.reference ?? '', amount: paiseToInput(total) }];
@@ -266,17 +295,33 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
   const cashPaise = parsedPayments.filter((p) => p.method === 'CASH').reduce((sum, p) => sum + (p.paise ?? 0), 0);
   const received = cashPaise > 0 && receivedText.trim() ? parseRupees(receivedText) : null;
   const changePaise = received !== null ? received - cashPaise : null;
-  const hasProducts = lineInputs.some((l) => l.qty > 0);
 
   const focusProduct = () => window.setTimeout(() => productInput.current?.focus(), 0);
+
+  // ---- Client ----
+  const typingNewClient = !client && clientText.trim().length >= 2;
+  const duplicateBlocks = typingNewClient && matches.length > 0 && !allowDuplicate;
+  const selectClient = (c: ClientRow) => {
+    setClient(c);
+    setClientText('');
+    setNewPhone('');
+    setMatches([]);
+    setAllowDuplicate(false);
+    focusProduct();
+  };
 
   // ---- Consultations and procedures ----
   const consultations = catalog.filter((s) => s.kind === 'CONSULTATION');
   const procedures = catalog.filter((s) => s.kind === 'PROCEDURE');
   const standardConsultation = consultations[0];
-  const addService = (service: ServiceRow) => {
-    setServiceLines((current) => [...current, { key: ++serviceKeys, service, qty: 1, price: paiseToInput(service.defaultPricePaise) }]);
-    setMenu(null);
+  const addFromCatalog = (service: ServiceRow) => setServiceLines((current) => [...current, fromCatalog(service)]);
+  /** A name typed on the bill: the list entry if it exists (any case), otherwise a new one. */
+  const addTyped = (kind: ServiceKind, name: string) => {
+    const clean = name.trim();
+    if (!clean) return;
+    const known = catalog.find((s) => s.kind === kind && s.name.toLowerCase() === clean.toLowerCase());
+    if (known) addFromCatalog(known);
+    else setServiceLines((current) => [...current, { key: ++serviceKeys, serviceId: null, kind, name: clean, defaultPricePaise: null, qty: 1, price: '' }]);
   };
   const updateService = (key: number, patch: Partial<ServiceLine>) => setServiceLines((current) => current.map((s) => (s.key === key ? { ...s, ...patch } : s)));
   const removeService = (key: number) => setServiceLines((current) => current.filter((s) => s.key !== key));
@@ -312,6 +357,10 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
     setServiceLines([]);
     setClient(null);
     setClientText('');
+    setNewPhone('');
+    setMatches([]);
+    setAllowDuplicate(false);
+    setUseStandard(true);
     setDiscountKind('NONE');
     setDiscountText('');
     setSplit(false);
@@ -324,8 +373,15 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
 
   const paymentsOk = total === 0 || paidPaise === total;
   const canFinalize =
-    !busy && itemCount > 0 && servicesValid && quote !== null && paymentsOk && (!correcting || reason.trim().length >= 3) && (changePaise === null || changePaise >= 0);
-  const dialogOpen = partial !== null || needApproval || confirmClear || creatingClient !== null || done !== null || menu !== null;
+    !busy &&
+    itemCount > 0 &&
+    servicesValid &&
+    quote !== null &&
+    paymentsOk &&
+    !duplicateBlocks &&
+    (!correcting || reason.trim().length >= 3) &&
+    (changePaise === null || changePaise >= 0);
+  const dialogOpen = partial !== null || needApproval || confirmClear || done !== null;
 
   const finalize = useCallback(
     async (withApproval: { username: string; password: string } | null, print: boolean) => {
@@ -335,6 +391,8 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
       const input: BillInput = {
         idempotencyKey: billKey,
         clientId: client?.id ?? null,
+        // Typed on the bill and not picked from the list: saved together with this bill.
+        newClient: !client && clientText.trim() ? { fullName: clientText.trim(), phone: newPhone.trim(), allowDuplicate } : null,
         lines: lineInputs,
         services: serviceInputs,
         discount,
@@ -360,7 +418,7 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [busy, itemCount, quote, discount, billKey, client, lineInputs, serviceInputs, total, parsedPayments, received, note, correcting, reason],
+    [busy, itemCount, quote, discount, billKey, client, clientText, newPhone, allowDuplicate, lineInputs, serviceInputs, total, parsedPayments, received, note, correcting, reason],
   );
 
   // F2: client search, F4: product search, Ctrl/Cmd+Enter (or F9): finalize & print.
@@ -382,11 +440,6 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
   }, [finalize, approval, canFinalize, dialogOpen]);
 
   const quoteFor = (productId: number) => quote?.lines.filter((q) => q.productId === productId) ?? [];
-  const clientChoices: ClientOption[] = clientText.trim().length >= 2 ? [...clientOptions, { create: clientText.trim() }] : [];
-  const selectClient = (c: ClientRow) => {
-    setClient(c);
-    focusProduct();
-  };
 
   return (
     <>
@@ -414,7 +467,6 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
                 <Button
                   onClick={() => {
                     setClient(null);
-                    setClientText('');
                     window.setTimeout(() => clientInput.current?.focus(), 0);
                   }}
                 >
@@ -423,31 +475,23 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
               </Stack>
             ) : (
               <Stack spacing={1.5}>
-                <Autocomplete<ClientOption>
-                  options={clientChoices}
-                  value={null}
-                  onChange={(_, option) => {
-                    if (!option) return;
-                    if (isCreate(option)) setCreatingClient(option.create);
-                    else selectClient(option);
-                  }}
-                  inputValue={clientText}
-                  onInputChange={(_, value, why) => {
-                    if (why !== 'reset') setClientText(value);
-                  }}
-                  getOptionLabel={(o) => (isCreate(o) ? t.billing.createClient(o.create) : o.fullName)}
-                  isOptionEqualToValue={(a, b) => !isCreate(a) && !isCreate(b) && a.id === b.id}
-                  filterOptions={(x) => x}
-                  noOptionsText={t.billing.noClientMatch}
-                  renderOption={({ key, ...props }, o) =>
-                    isCreate(o) ? (
-                      <li key={key} {...props}>
-                        <Typography color="primary" sx={{ fontWeight: 600 }}>
-                          {clientOptions.length === 0 && `${t.billing.noClientMatch} `}
-                          {t.billing.createClient(o.create)}
-                        </Typography>
-                      </li>
-                    ) : (
+                <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
+                  <Autocomplete<ClientRow, false, false, true>
+                    freeSolo
+                    sx={{ flexGrow: 1 }}
+                    options={clientOptions}
+                    value={null}
+                    onChange={(_, option) => {
+                      if (option && typeof option !== 'string') selectClient(option);
+                      else if (typingNewClient) window.setTimeout(() => phoneInput.current?.focus(), 0);
+                    }}
+                    inputValue={clientText}
+                    onInputChange={(_, value, why) => {
+                      if (why !== 'reset') setClientText(value);
+                    }}
+                    getOptionLabel={(o) => (typeof o === 'string' ? o : o.fullName)}
+                    filterOptions={(x) => x}
+                    renderOption={({ key, ...props }, o) => (
                       <li key={key} {...props}>
                         <Box>
                           <Typography sx={{ fontWeight: 600 }}>{o.fullName}</Typography>
@@ -456,11 +500,47 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
                           </Typography>
                         </Box>
                       </li>
-                    )
-                  }
-                  renderInput={(params) => <TextField {...params} placeholder={t.billing.clientPlaceholder} inputRef={clientInput} autoFocus={!correcting} />}
-                />
-                {recentClients.length > 0 && (
+                    )}
+                    renderInput={(params) => <TextField {...params} label={t.clients.name} placeholder={t.billing.clientPlaceholder} inputRef={clientInput} autoFocus={!correcting} />}
+                  />
+                  {typingNewClient && (
+                    <TextField
+                      label={t.billing.newClientPhone}
+                      value={newPhone}
+                      onChange={(e) => {
+                        setNewPhone(e.target.value);
+                        setAllowDuplicate(false);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && !e.ctrlKey && !e.metaKey) focusProduct();
+                      }}
+                      inputRef={phoneInput}
+                      sx={{ width: { xs: '100%', sm: 220 } }}
+                      slotProps={{ htmlInput: { inputMode: 'tel' } }}
+                    />
+                  )}
+                </Stack>
+                {typingNewClient && matches.length === 0 && <Typography color="text.secondary">{t.billing.newClientNote(clientText.trim())}</Typography>}
+                {typingNewClient && matches.length > 0 && (
+                  <Alert severity={allowDuplicate ? 'info' : 'warning'}>
+                    <Stack spacing={1}>
+                      <strong>{t.billing.alreadyClient}</strong>
+                      {matches.map((m) => (
+                        <Stack key={m.client.id} direction="row" spacing={2} sx={{ alignItems: 'center' }}>
+                          <Typography sx={{ flexGrow: 1 }}>
+                            {m.client.fullName} · {m.client.clientCode}
+                            {m.client.phone && ` · ${m.client.phone}`} · {t.clients.reasons[m.reason]}
+                          </Typography>
+                          <Button size="small" variant="contained" onClick={() => selectClient(m.client)}>
+                            {t.billing.useExisting}
+                          </Button>
+                        </Stack>
+                      ))}
+                      <FormControlLabel control={<Checkbox checked={allowDuplicate} onChange={(e) => setAllowDuplicate(e.target.checked)} />} label={t.billing.differentPerson} />
+                    </Stack>
+                  </Alert>
+                )}
+                {!clientText && recentClients.length > 0 && (
                   <Stack direction="row" spacing={1} sx={{ alignItems: 'center', flexWrap: 'wrap' }} useFlexGap>
                     <Typography variant="body2" color="text.secondary">
                       {t.billing.recent}
@@ -481,28 +561,14 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
           <CardContent>
             <Section
               title={t.billing.consultation}
-              actions={
-                <ButtonGroup variant="outlined">
-                  {standardConsultation && <Button onClick={() => addService(standardConsultation)}>{t.billing.addConsultation(rupees(standardConsultation.defaultPricePaise))}</Button>}
-                  {consultations.length > 1 && (
-                    <Button aria-label={t.billing.moreConsultations} onClick={(e) => setMenu({ kind: 'CONSULTATION', anchor: e.currentTarget })}>
-                      ▾
-                    </Button>
-                  )}
-                </ButtonGroup>
-              }
+              actions={standardConsultation && <Button variant="outlined" onClick={() => addFromCatalog(standardConsultation)}>{t.billing.addConsultation(rupees(standardConsultation.defaultPricePaise))}</Button>}
             >
-              <ServiceRows lines={serviceLines.filter((s) => s.service.kind === 'CONSULTATION')} onChange={updateService} onRemove={removeService} showQty={false} />
+              <ServiceTyper kind="CONSULTATION" options={consultations} placeholder={t.billing.typeConsultation} onPick={addFromCatalog} onTyped={addTyped} />
+              <ServiceRows lines={serviceLines.filter((s) => s.kind === 'CONSULTATION')} onChange={updateService} onRemove={removeService} showQty={false} />
             </Section>
-            <Section
-              title={t.billing.procedures}
-              actions={
-                <Button variant="outlined" disabled={procedures.length === 0} onClick={(e) => setMenu({ kind: 'PROCEDURE', anchor: e.currentTarget })}>
-                  {t.billing.addProcedure}
-                </Button>
-              }
-            >
-              <ServiceRows lines={serviceLines.filter((s) => s.service.kind === 'PROCEDURE')} onChange={updateService} onRemove={removeService} showQty />
+            <Section title={t.billing.procedures}>
+              <ServiceTyper kind="PROCEDURE" options={procedures} placeholder={t.billing.typeProcedure} onPick={addFromCatalog} onTyped={addTyped} />
+              <ServiceRows lines={serviceLines.filter((s) => s.kind === 'PROCEDURE')} onChange={updateService} onRemove={removeService} showQty />
             </Section>
             <Section title={t.billing.products}>
               <Stack direction="row" spacing={2} sx={{ alignItems: 'center', mb: 1 }}>
@@ -615,13 +681,24 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
             <CardContent>
               <Stack spacing={2}>
                 <Stack direction="row" spacing={2} sx={{ alignItems: 'center', flexWrap: 'wrap' }} useFlexGap>
-                  <Typography sx={{ minWidth: 170 }}>{t.billing.discountOnMedicines}</Typography>
-                  <ToggleButtonGroup size="small" exclusive value={discountKind} disabled={!hasProducts} onChange={(_, v: DiscountKind | null) => v && setDiscountKind(v)}>
-                    <ToggleButton value="NONE">{t.billing.discountNone}</ToggleButton>
-                    <ToggleButton value="PERCENT">{t.billing.discountPercent}</ToggleButton>
-                    <ToggleButton value="AMOUNT">{t.billing.discountAmount}</ToggleButton>
-                  </ToggleButtonGroup>
-                  {discountKind !== 'NONE' && hasProducts && <TextField size="small" value={discountText} onChange={(e) => setDiscountText(e.target.value)} error={discount === null} sx={{ width: 120 }} />}
+                  {standardPercent > 0 && (
+                    <FormControlLabel
+                      control={<Checkbox checked={useStandard} onChange={(e) => setUseStandard(e.target.checked)} />}
+                      label={t.billing.standardDiscount(standardPercent)}
+                      disabled={!hasProducts}
+                    />
+                  )}
+                  {!standardOn && (
+                    <>
+                      <Typography>{standardPercent > 0 ? t.billing.otherDiscount : t.billing.discountOnMedicines}</Typography>
+                      <ToggleButtonGroup size="small" exclusive value={discountKind} disabled={!hasProducts} onChange={(_, v: DiscountKind | null) => v && setDiscountKind(v)}>
+                        <ToggleButton value="NONE">{t.billing.discountNone}</ToggleButton>
+                        <ToggleButton value="PERCENT">{t.billing.discountPercent}</ToggleButton>
+                        <ToggleButton value="AMOUNT">{t.billing.discountAmount}</ToggleButton>
+                      </ToggleButtonGroup>
+                      {discountKind !== 'NONE' && hasProducts && <TextField size="small" value={discountText} onChange={(e) => setDiscountText(e.target.value)} error={discount === null} sx={{ width: 120 }} />}
+                    </>
+                  )}
                   {!hasProducts && (
                     <Typography variant="body2" color="text.secondary">
                       {t.billing.discountNeedsMedicines}
@@ -629,7 +706,7 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
                   )}
                 </Stack>
                 <Stack direction="row" spacing={2} sx={{ alignItems: 'center', flexWrap: 'wrap' }} useFlexGap>
-                  <Typography sx={{ minWidth: 170 }}>{t.billing.payment}</Typography>
+                  <Typography sx={{ minWidth: 100 }}>{t.billing.payment}</Typography>
                   {!split && (
                     <ToggleButtonGroup
                       exclusive
@@ -701,6 +778,7 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
                     {t.billing.paymentsMismatch} ({rupees(paidPaise)} / {rupees(total)})
                   </Alert>
                 )}
+                {duplicateBlocks && <Alert severity="warning">{t.billing.duplicateBlocks}</Alert>}
                 <ErrorAlert error={error} />
                 <Button variant="contained" size="large" sx={{ py: 1.5, fontSize: '1.05rem' }} disabled={!canFinalize} onClick={() => void finalize(approval, true)}>
                   {busy ? t.billing.finalizing : t.billing.finalizePrint(MOD_KEY)}
@@ -713,15 +791,6 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
           </Card>
         </Box>
       </Stack>
-
-      <Menu open={menu !== null} anchorEl={menu?.anchor ?? null} onClose={() => setMenu(null)}>
-        {(menu?.kind === 'PROCEDURE' ? procedures : consultations).map((s) => (
-          <MenuItem key={s.id} onClick={() => addService(s)} sx={{ minWidth: 260, justifyContent: 'space-between', gap: 3 }}>
-            <span>{s.name}</span>
-            <Typography color="text.secondary">{rupees(s.defaultPricePaise)}</Typography>
-          </MenuItem>
-        ))}
-      </Menu>
 
       {partial && (
         <Dialog open onClose={() => setPartial(null)}>
@@ -775,20 +844,6 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
         />
       )}
       <ConfirmDialog open={confirmClear} title={t.billing.clear} text={t.billing.clearConfirm} confirmLabel={t.billing.clear} danger onConfirm={() => reset()} onClose={() => setConfirmClear(false)} />
-      {creatingClient !== null && (
-        <ClientDialog
-          client={null}
-          initialName={creatingClient}
-          onClose={() => setCreatingClient(null)}
-          onSaved={(c) => {
-            // New or existing: either way it is now this bill's client, no extra steps (brief §5).
-            setCreatingClient(null);
-            setClientText('');
-            notify(t.clients.created(c.fullName));
-            selectClient(c);
-          }}
-        />
-      )}
       {done && (
         <BillDetailDialog
           billId={done.detail.bill.id}
@@ -820,6 +875,63 @@ function Section({ title, actions, children }: { title: string; actions?: ReactN
   );
 }
 
+/**
+ * Type a consultation or procedure like a client name: pick one from the list (with its usual
+ * price), or type a new name and press Enter / Add; its amount is then typed on the line.
+ */
+function ServiceTyper({
+  kind,
+  options,
+  placeholder,
+  onPick,
+  onTyped,
+}: {
+  kind: ServiceKind;
+  options: ServiceRow[];
+  placeholder: string;
+  onPick: (s: ServiceRow) => void;
+  onTyped: (kind: ServiceKind, name: string) => void;
+}) {
+  const [text, setText] = useState('');
+  const add = () => {
+    onTyped(kind, text);
+    setText('');
+  };
+  return (
+    <Stack direction="row" spacing={2} sx={{ alignItems: 'center', mb: 1 }}>
+      <Autocomplete<ServiceRow, false, false, true>
+        freeSolo
+        sx={{ flexGrow: 1 }}
+        options={options}
+        value={null}
+        inputValue={text}
+        onInputChange={(_, value, why) => {
+          if (why !== 'reset') setText(value);
+        }}
+        onChange={(_, option) => {
+          if (option && typeof option !== 'string') {
+            onPick(option);
+            setText('');
+          } else if (typeof option === 'string') add();
+        }}
+        getOptionLabel={(o) => (typeof o === 'string' ? o : o.name)}
+        renderOption={({ key, ...props }, o) => (
+          <li key={key} {...props}>
+            <Stack direction="row" sx={{ justifyContent: 'space-between', width: '100%', gap: 2 }}>
+              <span>{o.name}</span>
+              <Typography color="text.secondary">{rupees(o.defaultPricePaise)}</Typography>
+            </Stack>
+          </li>
+        )}
+        renderInput={(params) => <TextField {...params} size="small" placeholder={placeholder} />}
+      />
+      <Button variant="outlined" disabled={!text.trim()} onClick={add}>
+        {text.trim() ? t.billing.addTyped(text.trim()) : t.billing.add}
+      </Button>
+    </Stack>
+  );
+}
+
 function ServiceRows({
   lines,
   onChange,
@@ -831,22 +943,15 @@ function ServiceRows({
   onRemove: (key: number) => void;
   showQty: boolean;
 }) {
-  if (lines.length === 0) return <Typography color="text.secondary">{t.billing.noServices}</Typography>;
+  if (lines.length === 0) return null;
   return (
     <Stack spacing={1}>
       {lines.map((line) => {
-        const paise = parseRupees(line.price || '0');
-        const below = paise !== null && paise < line.service.defaultPricePaise;
+        const paise = line.price.trim() ? parseRupees(line.price) : null;
+        const missing = !line.price.trim();
         return (
           <Stack key={line.key} direction="row" spacing={2} sx={{ alignItems: 'center' }}>
-            <Box sx={{ flexGrow: 1 }}>
-              <Typography sx={{ fontWeight: 600 }}>{line.service.name}</Typography>
-              {below && (
-                <Typography variant="body2" color="warning.main">
-                  {t.billing.belowDefault(rupees(line.service.defaultPricePaise))}
-                </Typography>
-              )}
-            </Box>
+            <Typography sx={{ fontWeight: 600, flexGrow: 1 }}>{line.name}</Typography>
             {showQty && (
               <TextField
                 size="small"
@@ -857,7 +962,16 @@ function ServiceRows({
                 slotProps={{ htmlInput: { inputMode: 'numeric', style: { textAlign: 'right' } } }}
               />
             )}
-            <TextField size="small" label="₹" value={line.price} error={paise === null} onChange={(e) => onChange(line.key, { price: e.target.value })} sx={{ width: 110 }} />
+            <TextField
+              size="small"
+              label="₹"
+              value={line.price}
+              autoFocus={missing}
+              error={!missing && paise === null}
+              helperText={missing ? t.billing.amountNeeded : undefined}
+              onChange={(e) => onChange(line.key, { price: e.target.value })}
+              sx={{ width: 130 }}
+            />
             <Typography sx={{ minWidth: 100, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{paise === null ? '—' : rupees(paise * line.qty)}</Typography>
             <IconButton aria-label="remove" onClick={() => onRemove(line.key)}>
               ✕

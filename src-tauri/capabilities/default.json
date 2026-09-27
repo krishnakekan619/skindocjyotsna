@@ -58,6 +58,7 @@
     "allow-sales-report",
     "allow-product-sales-report",
     "allow-stock-report",
+    "allow-top-sellers",
     "allow-get-system-info",
     "allow-get-health",
     "allow-list-backups",

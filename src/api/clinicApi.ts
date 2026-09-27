@@ -72,6 +72,8 @@ export interface ClinicApi {
   salesReport(range: T.DateRange): Promise<T.SalesReport>;
   productSalesReport(range: T.DateRange): Promise<T.ProductSales[]>;
   stockReport(): Promise<T.StockReport>;
+  /** Dashboard: what sells most, and the consultation / procedures / medicines split. */
+  topSellers(range: T.DateRange): Promise<T.TopSellers>;
   // System
   getSystemInfo(): Promise<T.SystemInfo>;
   getHealth(): Promise<T.HealthReport>;
