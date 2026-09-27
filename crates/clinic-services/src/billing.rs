@@ -1029,11 +1029,6 @@ fn method_label(method: &str) -> String {
     .to_string()
 }
 
-/// `2026-12-31` -> `12/2026` (receipts show month and year of expiry).
-fn short_expiry(date: &str) -> String {
-    Date::parse(date).map_or_else(|| date.to_string(), |d| format!("{:02}/{}", d.month, d.year))
-}
-
 /// Everything printed on the receipt, for the PDF and the on-screen/print preview.
 pub fn receipt(db: &Database, actor: &Session, bill_id: i64) -> Result<ReceiptData, ServiceError> {
     actor.require(Permission::CreateBills)?;
@@ -1064,18 +1059,9 @@ pub fn receipt(db: &Database, actor: &Session, bill_id: i64) -> Result<ReceiptDa
             .iter()
             .map(|i| ReceiptLine {
                 name: i.product_name.clone(),
-                detail: (!i.batches.is_empty()).then(|| {
-                    i.batches
-                        .iter()
-                        // Lot numbers made up by Add Inventory mean nothing to patients: expiry only.
-                        .map(|b| match (&b.expiry_date, b.batch_no.starts_with("LOT-")) {
-                            (Some(e), true) => format!("Exp {}", short_expiry(e)),
-                            (Some(e), false) => format!("Batch {} · Exp {}", b.batch_no, short_expiry(e)),
-                            (None, _) => format!("Batch {}", b.batch_no),
-                        })
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                }),
+                // Invoices show only what the patient bought: no batch numbers or expiry dates
+                // (owner brief 2026-09-27). They stay in the bill record and the stock ledger.
+                detail: None,
                 qty: u32::try_from(i.qty).unwrap_or(0),
                 unit_price: Paise::new(i.unit_price_paise),
                 discount: Paise::new(i.discount_share_paise),
@@ -1111,7 +1097,8 @@ pub fn receipt(db: &Database, actor: &Session, bill_id: i64) -> Result<ReceiptDa
             clinic_name: clinic.name.clone(),
             clinic_address_lines: clinic.address_lines.clone(),
             clinic_phone: non_empty(&clinic.phone),
-            clinic_gstin: non_empty(&clinic.gstin),
+            // No GST wording anywhere on the invoice (owner brief 2026-09-27; GST is hidden, DEC-036).
+            clinic_gstin: None,
             status_banner,
             bill_no: bill.bill_no.clone(),
             date_time: format_local_datetime(bill.finalized_at, clinic.utc_offset_minutes),
@@ -1124,8 +1111,8 @@ pub fn receipt(db: &Database, actor: &Session, bill_id: i64) -> Result<ReceiptDa
             breakdown,
             discount_label: discount_label.to_string(),
             discount: Paise::new(bill.discount_paise),
-            tax_label: "GST included".to_string(),
-            tax: Paise::new(bill.tax_paise),
+            tax_label: String::new(),
+            tax: Paise::ZERO,
             round_off: Paise::new(bill.round_off_paise),
             total: Paise::new(bill.total_paise),
             payments: detail

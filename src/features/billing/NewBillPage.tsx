@@ -40,7 +40,7 @@ import {
   type ServiceRow,
 } from '../../api';
 import { useApp } from '../../app/AppContext';
-import { ConfirmDialog, ErrorAlert, PageHeader } from '../../components/common';
+import { AddButton, ConfirmDialog, ErrorAlert, PageHeader } from '../../components/common';
 import { MOD_KEY, t } from '../../i18n/en';
 import { clearBillDraft, loadBillDraft, saveBillDraft } from '../../lib/billDraft';
 import { formatDateTime, formatExpiry, newBillKey } from '../../lib/dates';
@@ -74,6 +74,9 @@ interface PaymentDraft {
 }
 
 let serviceKeys = 0;
+
+/** Search/type boxes stay compact so the whole bill fits on screen. */
+const INPUT_MAX_WIDTH = 560;
 
 /** What an unfinished bill keeps on this computer (not a correction: that starts from the bill). */
 interface DraftState {
@@ -691,7 +694,7 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
           <CardContent>
             <Section
               title={t.billing.consultation}
-              actions={standardConsultation && <Button variant="outlined" onClick={() => addFromCatalog(standardConsultation)}>{t.billing.addConsultation(rupees(standardConsultation.defaultPricePaise))}</Button>}
+              actions={standardConsultation && <AddButton onClick={() => addFromCatalog(standardConsultation)}>{t.billing.addConsultation(rupees(standardConsultation.defaultPricePaise))}</AddButton>}
             >
               <ServiceTyper kind="CONSULTATION" options={consultations} placeholder={t.billing.typeConsultation} onPick={addFromCatalog} onTyped={addTyped} />
               <ServiceRows lines={serviceLines.filter((s) => s.kind === 'CONSULTATION')} onChange={updateService} onRemove={removeService} showQty={false} />
@@ -701,9 +704,11 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
               <ServiceRows lines={serviceLines.filter((s) => s.kind === 'PROCEDURE')} onChange={updateService} onRemove={removeService} showQty />
             </Section>
             <Section title={t.billing.products}>
-              <Stack direction="row" spacing={2} sx={{ alignItems: 'center', mb: 1 }}>
+              <Stack spacing={1} sx={{ alignItems: 'flex-start', mb: 1.5 }}>
+              <Stack direction="row" spacing={1.5} sx={{ alignItems: 'center', width: '100%', maxWidth: INPUT_MAX_WIDTH }}>
                 <Autocomplete
                   sx={{ flexGrow: 1 }}
+                  size="small"
                   options={productOptions}
                   value={picked}
                   onChange={(_, value) => {
@@ -735,7 +740,7 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
                       </Box>
                     </li>
                   )}
-                  renderInput={(params) => <TextField {...params} placeholder={t.billing.productSearch} inputRef={productInput} />}
+                  renderInput={(params) => <TextField {...params} size="small" placeholder={t.billing.productSearch} inputRef={productInput} />}
                 />
                 <TextField
                   label={t.common.qty}
@@ -745,12 +750,14 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
                     if (e.key === 'Enter' && !e.ctrlKey && !e.metaKey) tryAdd(picked, qtyText);
                   }}
                   inputRef={qtyInput}
-                  sx={{ width: 90 }}
+                  size="small"
+                  sx={{ width: 80 }}
                   slotProps={{ htmlInput: { inputMode: 'numeric' } }}
                 />
-                <Button variant="contained" onClick={() => tryAdd(picked, qtyText)} disabled={!picked}>
+              </Stack>
+                <AddButton onClick={() => tryAdd(picked, qtyText)} disabled={!picked}>
                   {t.billing.add}
-                </Button>
+                </AddButton>
               </Stack>
               {!productText && recentProducts.length > 0 && (
                 <Stack direction="row" spacing={1} sx={{ alignItems: 'center', flexWrap: 'wrap', mb: 1 }} useFlexGap>
@@ -1041,10 +1048,11 @@ function ServiceTyper({
     setText('');
   };
   return (
-    <Stack direction="row" spacing={2} sx={{ alignItems: 'center', mb: 1 }}>
+    <Stack spacing={1} sx={{ alignItems: 'flex-start', mb: 1.5 }}>
       <Autocomplete<ServiceRow, false, false, true>
         freeSolo
-        sx={{ flexGrow: 1 }}
+        size="small"
+        sx={{ width: '100%', maxWidth: INPUT_MAX_WIDTH }}
         options={options}
         value={null}
         inputValue={text}
@@ -1068,9 +1076,9 @@ function ServiceTyper({
         )}
         renderInput={(params) => <TextField {...params} size="small" placeholder={placeholder} />}
       />
-      <Button variant="outlined" disabled={!text.trim()} onClick={add}>
+      <AddButton disabled={!text.trim()} onClick={add}>
         {text.trim() ? t.billing.addTyped(text.trim()) : t.billing.add}
-      </Button>
+      </AddButton>
     </Stack>
   );
 }

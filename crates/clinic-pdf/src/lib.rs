@@ -61,7 +61,7 @@ mod tests {
     fn embedded_fonts_cover_every_character_on_the_sample_receipt() -> Result<(), PdfError> {
         let fonts = load_fonts()?;
         let sample = sample_receipt();
-        let mut text: Vec<String> = vec![sample.clinic_name.clone(), sample.bill_no.clone(), "₹ Not supplied –…".into()];
+        let mut text: Vec<String> = vec![sample.clinic_name.clone(), sample.bill_no.clone(), "₹ Not supplied –…".into(), sample.footer.clone().unwrap_or_default()];
         text.extend(sample.clinic_address_lines.iter().cloned());
         text.extend(sample.lines.iter().map(|line| line.name.clone()));
         text.extend(sample.lines.iter().filter_map(|line| line.detail.clone()));

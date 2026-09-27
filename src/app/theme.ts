@@ -24,6 +24,9 @@ export const palette = {
   success: '#5E8C6A',
   warning: '#C08A3E',
   error: '#B4585A',
+  /** "Add" buttons on the bill screen: white text on this green has 5:1 contrast. */
+  add: '#3F7A4F',
+  addHover: '#33653F',
 };
 
 export const theme = createTheme({

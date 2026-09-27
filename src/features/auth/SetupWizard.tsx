@@ -6,12 +6,12 @@ import { t } from '../../i18n/en';
 import { AccountFields, accountProblem, emptyAccount, toAccount } from './AccountFields';
 
 const DEFAULT_CLINIC: ClinicSettings = {
-  name: '',
+  name: "Dr Jyotsna's SkinDoc Clinic",
   addressLines: ['', ''],
   phone: '',
   email: '',
   gstin: '',
-  receiptFooter: 'Thank you. Get well soon!',
+  receiptFooter: 'Continue your Skincare Journey with the SkinDoc. Thank you.',
   idleLockMinutes: 15,
   invoicePrefix: 'INV',
   receptionistDiscountCapPercent: 10,

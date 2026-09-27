@@ -2,7 +2,14 @@
 
 ## v0.4.2 (unreleased): drafts, keyboard use, dashboard that adds up, CI hardening (2026-09-27)
 
+### Invoice
+- The clinic name comes from **Settings → Clinic**. New installs start with "Dr Jyotsna's SkinDoc Clinic"; on an existing install, type it there once.
+- The clinic **address** prints on one line, wrapping only when it doesn't fit.
+- No GST wording (no GSTIN, no GST line) and no batch numbers or expiry dates, on the PDF, print and on-screen preview.
+- **New footer:** "Continue your Skincare Journey with the SkinDoc. Thank you." It replaces the old default automatically; a footer you typed yourself is kept.
+
 ### Billing
+- **Consultation, procedure and medicine boxes** are more compact, with a green **Add** button directly below each one.
 - **Unfinished bills are kept:**
   - a bill being typed survives a crash, a restart or the idle lock, and comes back with a notice and a **Discard** button;
   - it keeps the same bill key, so a bill saved just before a crash is never saved twice;

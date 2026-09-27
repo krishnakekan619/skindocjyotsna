@@ -5,10 +5,10 @@ import { ReceiptPreview } from './ReceiptPreview';
 
 // Mirrors clinic_pdf::sample_receipt() so the preview and the PDF show the same content.
 const sample: ReceiptData = {
-  clinicName: 'SkinDocJyotsna Clinic',
-  clinicAddressLines: ['12 MG Road, Pune 411001'],
+  clinicName: "Dr Jyotsna's SkinDoc Clinic",
+  clinicAddressLines: ['12 MG Road,', 'Pune 411001'],
   clinicPhone: '020-12345678',
-  clinicGstin: null,
+  clinicGstin: '27ABCDE1234F1Z5',
   statusBanner: null,
   billNo: 'INV/26-27/000123',
   dateTime: '25-Sep-2026 10:42',
@@ -29,7 +29,7 @@ const sample: ReceiptData = {
   amountReceived: 20000,
   changeDue: 5000,
   billedBy: 'Priya',
-  footer: 'Thank you',
+  footer: 'Continue your Skincare Journey with the SkinDoc. Thank you.',
   notice: 'This is a computer-generated e-receipt and does not require a signature or stamp.',
 };
 
@@ -41,6 +41,18 @@ describe('ReceiptPreview', () => {
     expect(html).toContain('₹ 150.00');
     expect(html).toContain('-10.00');
     expect(html).toContain('Received 200.00');
+  });
+
+  it('shows the clinic name, the address on one line and the footer', () => {
+    expect(html).toContain('Dr Jyotsna&#x27;s SkinDoc Clinic');
+    expect(html).toContain('<p>12 MG Road, Pune 411001</p>');
+    expect(html).toContain('Continue your Skincare Journey with the SkinDoc. Thank you.');
+  });
+
+  it('shows no GST wording, batch numbers or expiry dates, whatever the data holds', () => {
+    expect(html).not.toMatch(/GST/i);
+    expect(html).not.toContain('Batch');
+    expect(html).not.toContain('Exp ');
   });
 
   it('marks out-of-stock items as not supplied with zero value (DEC-002)', () => {

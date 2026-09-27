@@ -13,8 +13,10 @@ import {
   Stack,
   TextField,
   Typography,
+  type ButtonProps,
 } from '@mui/material';
 import { errorMessage } from '../api';
+import { palette } from '../app/theme';
 import { t } from '../i18n/en';
 
 export function PageHeader({ title, subtitle, actions }: { title: string; subtitle?: string | undefined; actions?: ReactNode }) {
@@ -177,4 +179,25 @@ export function rowActions(onActivate: () => void) {
       }
     },
   };
+}
+
+/** The green "Add" button used under every input on the bill screen (one look everywhere). */
+export function AddButton({ children, ...props }: ButtonProps) {
+  return (
+    <Button
+      variant="contained"
+      size="medium"
+      {...props}
+      sx={{
+        bgcolor: palette.add,
+        color: '#FFFFFF',
+        minHeight: 36,
+        minWidth: 96,
+        '&:hover': { bgcolor: palette.addHover },
+        ...(props.sx as object),
+      }}
+    >
+      {children}
+    </Button>
+  );
 }

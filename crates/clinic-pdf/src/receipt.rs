@@ -1,4 +1,4 @@
-use clinic_core::money::{BasisPoints, Paise};
+use clinic_core::money::Paise;
 use serde::{Deserialize, Serialize};
 
 /// Everything printed on a receipt, already formatted where formatting is locale-specific
@@ -57,7 +57,8 @@ pub const E_RECEIPT_NOTICE: &str = "This is a computer-generated e-receipt and d
 #[serde(rename_all = "camelCase")]
 pub struct ReceiptLine {
     pub name: String,
-    /// Small second line, e.g. "Batch A23 · Exp 12/2026".
+    /// Small second line under the item; not used for batch numbers or expiry dates (not shown to
+    /// patients). "Not supplied" is printed from `not_supplied_qty`.
     pub detail: Option<String>,
     pub qty: u32,
     /// MRP per unit (before the discount).
@@ -85,10 +86,8 @@ pub struct ReceiptPayment {
 /// Demo receipt used by the Phase 0 spike screen and tests.
 pub fn sample_receipt() -> ReceiptData {
     // Bill discount ₹10 spread over ₹160: Paracetamol 40 -> 37.50, cream 120 -> 112.50.
-    let tax = Paise::new(3_750).included_tax(BasisPoints::new(1_200)).value()
-        + Paise::new(11_250).included_tax(BasisPoints::new(1_800)).value();
     ReceiptData {
-        clinic_name: "SkinDocJyotsna Clinic".into(),
+        clinic_name: "Dr Jyotsna's SkinDoc Clinic".into(),
         clinic_address_lines: vec!["12 MG Road, Pune 411001".into()],
         clinic_phone: Some("020-12345678".into()),
         clinic_gstin: None,
@@ -99,7 +98,7 @@ pub fn sample_receipt() -> ReceiptData {
         lines: vec![
             ReceiptLine {
                 name: "Paracetamol 500mg".into(),
-                detail: Some("Batch A23 · Exp 12/2026".into()),
+                detail: None,
                 qty: 2,
                 unit_price: Paise::new(2_000),
                 discount: Paise::new(250),
@@ -109,7 +108,7 @@ pub fn sample_receipt() -> ReceiptData {
             },
             ReceiptLine {
                 name: "Pain Relief Cream".into(),
-                detail: Some("Batch C19 · Exp 08/2027".into()),
+                detail: None,
                 qty: 1,
                 unit_price: Paise::new(12_000),
                 discount: Paise::new(750),
@@ -132,15 +131,15 @@ pub fn sample_receipt() -> ReceiptData {
         breakdown: Vec::new(),
         discount_label: default_discount_label(),
         discount: Paise::new(1_000),
-        tax_label: "GST included".into(),
-        tax: Paise::new(tax),
+        tax_label: String::new(),
+        tax: Paise::ZERO,
         round_off: Paise::ZERO,
         total: Paise::new(15_000),
         payments: vec![ReceiptPayment { method: "Cash".into(), amount: Paise::new(15_000) }],
         amount_received: Some(Paise::new(20_000)),
         change_due: Some(Paise::new(5_000)),
         billed_by: Some("Priya".into()),
-        footer: Some("Thank you. Get well soon!".into()),
+        footer: Some("Continue your Skincare Journey with the SkinDoc. Thank you.".into()),
         notice: Some(E_RECEIPT_NOTICE.into()),
     }
 }

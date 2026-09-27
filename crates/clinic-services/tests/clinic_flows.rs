@@ -134,7 +134,9 @@ fn the_example_bill_deducts_stock_and_prices_correctly() -> TestResult {
 
     let receipt = billing::receipt(&clinic.db, &clinic.reception, done.bill.id)?;
     assert_eq!(receipt.total, Paise::new(15_000));
-    assert!(receipt.lines[0].detail.as_deref().is_some_and(|d| d.contains("Batch A1")));
+    assert!(receipt.lines.iter().all(|l| l.detail.is_none()), "no batch numbers or expiry dates on invoices");
+    assert_eq!((receipt.clinic_gstin.as_deref(), receipt.tax), (None, Paise::ZERO), "no GST on invoices");
+    assert_eq!(receipt.footer.as_deref(), Some("Continue your Skincare Journey with the SkinDoc. Thank you."));
     assert_ledger_consistent(&clinic)
 }
 

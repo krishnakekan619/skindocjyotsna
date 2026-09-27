@@ -17,6 +17,11 @@ const CLINIC_KEY: &str = "clinic.profile";
 /// The WhatsApp message typed in for the client when a receipt is shared (editable in Clinic
 /// details). Placeholders: {name} (client's first name), {clinic}, {billNo}, {total}.
 /// No medicines or other health details (privacy).
+/// Printed at the bottom of every invoice unless the clinic types its own.
+pub const DEFAULT_RECEIPT_FOOTER: &str = "Continue your Skincare Journey with the SkinDoc. Thank you.";
+/// The footer before v0.4.2: an unchanged one is replaced by the new default when loaded.
+const OLD_DEFAULT_RECEIPT_FOOTER: &str = "Thank you. Get well soon!";
+
 pub const DEFAULT_WHATSAPP_MESSAGE: &str = "Hello {name},\n\nThank you for visiting {clinic}.\n\nPlease find your e-receipt {billNo} attached.\nTotal: {total}\n\nThis is a computer-generated e-receipt and does not require a signature or stamp.\n\nThank you,\n{clinic}";
 
 /// Clinic details printed on receipts, plus clinic-wide preferences.
@@ -55,7 +60,7 @@ impl Default for ClinicSettings {
             phone: String::new(),
             email: String::new(),
             gstin: String::new(),
-            receipt_footer: "Thank you. Get well soon!".to_string(),
+            receipt_footer: DEFAULT_RECEIPT_FOOTER.to_string(),
             idle_lock_minutes: IDLE_LOCK_DEFAULT_MINUTES,
             invoice_prefix: "INV".to_string(),
             receptionist_discount_cap_percent: 10,
@@ -154,6 +159,11 @@ pub(crate) fn load(conn: &Connection) -> Result<ClinicSettings, ServiceError> {
     // Settings saved before v0.3.1 have no standard discount and get the default 10%: never more
     // than the clinic's receptionist limit, or every bill would need an approval.
     clinic.default_medicine_discount_percent = clinic.default_medicine_discount_percent.min(clinic.receptionist_discount_cap_percent);
+    // The old default footer, never changed by the clinic, becomes the new one (owner brief
+    // 2026-09-27). A footer the clinic typed itself is kept.
+    if clinic.receipt_footer == OLD_DEFAULT_RECEIPT_FOOTER {
+        clinic.receipt_footer = DEFAULT_RECEIPT_FOOTER.to_string();
+    }
     Ok(clinic)
 }
 

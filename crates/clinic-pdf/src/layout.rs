@@ -152,6 +152,31 @@ pub(crate) fn text_width_mm(font: &ParsedFont, text: &str, size_pt: f32) -> f32 
     units as f32 * size_pt / f32::from(font.units_per_em.max(1)) * MM_PER_PT
 }
 
+/// Splits `text` at spaces into as few lines as fit `max_mm` (one line whenever it fits). A single
+/// word wider than the page is shortened with "…".
+pub(crate) fn wrap_text(font: &ParsedFont, text: &str, size_pt: f32, max_mm: f32) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    let mut current = String::new();
+    for word in text.split_whitespace() {
+        let candidate = if current.is_empty() { word.to_string() } else { format!("{current} {word}") };
+        if current.is_empty() || text_width_mm(font, &candidate, size_pt) <= max_mm {
+            current = candidate;
+        } else {
+            lines.push(std::mem::take(&mut current));
+            current = word.to_string();
+        }
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    lines.into_iter().map(|line| fit_text(font, &line, size_pt, max_mm)).collect()
+}
+
+/// The clinic address on one line ("12 MG Road, Pune 411001"), from the address lines in Settings.
+pub(crate) fn address_text(lines: &[String]) -> String {
+    lines.iter().map(|l| l.trim().trim_end_matches(',')).filter(|l| !l.is_empty()).collect::<Vec<_>>().join(", ")
+}
+
 /// Shortens `text` with "…" until it fits `max_mm`.
 pub(crate) fn fit_text(font: &ParsedFont, text: &str, size_pt: f32, max_mm: f32) -> String {
     if text_width_mm(font, text, size_pt) <= max_mm {
@@ -192,16 +217,15 @@ fn header(p: &mut Pages<'_>, data: &ReceiptData) {
     let center = PAGE_WIDTH_MM / 2.0;
     p.text(&data.clinic_name, center, 14.0, Weight::Bold, Align::Center, BLACK);
     p.advance(14.0);
-    for address in &data.clinic_address_lines {
-        p.text(address, center, SMALL + 0.5, Weight::Regular, Align::Center, GREY);
+    // The whole address on one line; wrapped only when it is wider than the page.
+    let address = address_text(&data.clinic_address_lines);
+    for line in wrap_text(&p.fonts.regular, &address, SMALL + 0.5, RIGHT_MM - MARGIN_MM) {
+        p.text(&line, center, SMALL + 0.5, Weight::Regular, Align::Center, GREY);
         p.advance(SMALL + 0.5);
     }
-    let contact: Vec<String> = [data.clinic_phone.as_ref().map(|ph| format!("Ph {ph}")), data.clinic_gstin.as_ref().map(|g| format!("GSTIN {g}"))]
-        .into_iter()
-        .flatten()
-        .collect();
-    if !contact.is_empty() {
-        p.text(&contact.join("  ·  "), center, SMALL + 0.5, Weight::Regular, Align::Center, GREY);
+    // Phone only: no GSTIN or other GST wording on invoices.
+    if let Some(phone) = &data.clinic_phone {
+        p.text(&format!("Ph {phone}"), center, SMALL + 0.5, Weight::Regular, Align::Center, GREY);
         p.advance(SMALL + 0.5);
     }
     if let Some(banner) = &data.status_banner {
@@ -280,9 +304,6 @@ fn totals(p: &mut Pages<'_>, data: &ReceiptData) {
     if data.discount != Paise::ZERO {
         rows.push((data.discount_label.clone(), format!("-{}", money(data.discount)), false));
     }
-    if data.tax != Paise::ZERO {
-        rows.push((data.tax_label.clone(), money(data.tax), false));
-    }
     if data.round_off != Paise::ZERO {
         rows.push(("Round off".into(), money(data.round_off), false));
     }
@@ -320,8 +341,10 @@ fn totals(p: &mut Pages<'_>, data: &ReceiptData) {
     }
     if let Some(footer) = &data.footer {
         p.y += 3.0;
-        p.text(footer, PAGE_WIDTH_MM / 2.0, BODY, Weight::Regular, Align::Center, BLACK);
-        p.advance(BODY);
+        for line in wrap_text(&p.fonts.regular, footer, BODY, RIGHT_MM - MARGIN_MM) {
+            p.text(&line, PAGE_WIDTH_MM / 2.0, BODY, Weight::Regular, Align::Center, BLACK);
+            p.advance(BODY);
+        }
     }
     if let Some(notice) = &data.notice {
         p.y += 2.0;
@@ -350,6 +373,28 @@ mod tests {
         let long = text_width_mm(&fonts.regular, "₹ 10,000.00", BODY);
         assert!(short > 0.0 && long > short);
         assert!(text_width_mm(&fonts.regular, "₹ 10", 18.0) > short);
+        Ok(())
+    }
+
+    #[test]
+    fn the_address_is_one_line_when_it_fits_and_wraps_only_when_needed() -> Result<(), PdfError> {
+        let fonts = load_fonts()?;
+        let width = RIGHT_MM - MARGIN_MM;
+        let address = address_text(&["Shop 4, Sai Plaza,".into(), " FC Road ".into(), "Pune 411004".into()]);
+        assert_eq!(address, "Shop 4, Sai Plaza, FC Road, Pune 411004");
+        assert_eq!(wrap_text(&fonts.regular, &address, SMALL + 0.5, width), vec![address.clone()]);
+
+        let long = "Ground Floor, Shop No. 4 and 5, Sai Krupa Commercial Complex, Opposite Big Municipal Garden, Near Main Bus Stand, Fergusson College Road, Shivajinagar, Pune, Maharashtra 411004";
+        let lines = wrap_text(&fonts.regular, long, SMALL + 0.5, width);
+        assert!(lines.len() > 1, "too wide for one line");
+        assert!(lines.iter().all(|l| text_width_mm(&fonts.regular, l, SMALL + 0.5) <= width));
+        for pair in lines.windows(2) {
+            let next_word = pair[1].split(' ').next().unwrap_or_default();
+            let joined = format!("{} {next_word}", pair[0]);
+            assert!(text_width_mm(&fonts.regular, &joined, SMALL + 0.5) > width, "each line is filled before wrapping");
+        }
+        assert_eq!(lines.join(" "), long, "nothing lost");
+        assert!(wrap_text(&fonts.regular, "", SMALL, width).is_empty());
         Ok(())
     }
 

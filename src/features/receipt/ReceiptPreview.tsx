@@ -6,14 +6,17 @@ import './receipt.css';
 /**
  * On-screen and printable receipt. Shows the same data as the Rust-generated PDF, so the
  * printed copy matches the PDF. Print styles (A5) are in receipt.css.
+ * Like the PDF: the address on one line, no GST wording, no batch numbers or expiry dates.
  */
 export function ReceiptPreview({ data }: { data: ReceiptData }) {
-  const contact = [data.clinicPhone && `Ph ${data.clinicPhone}`, data.clinicGstin && `GSTIN ${data.clinicGstin}`].filter(Boolean);
+  const address = data.clinicAddressLines
+    .map((line) => line.trim().replace(/,+$/, ''))
+    .filter(Boolean)
+    .join(', ');
   type TotalRow = { label: string; value: string; strong?: boolean };
   const totals: TotalRow[] =
     data.breakdown.length > 0 ? data.breakdown.map((row) => ({ label: row.label, value: formatPaise(row.amount) })) : [{ label: 'Subtotal', value: formatPaise(data.subtotal) }];
   if (data.discount) totals.push({ label: data.discountLabel, value: `-${formatPaise(data.discount)}` });
-  if (data.tax) totals.push({ label: data.taxLabel, value: formatPaise(data.tax) });
   if (data.roundOff) totals.push({ label: 'Round off', value: formatPaise(data.roundOff) });
   totals.push({ label: 'TOTAL', value: `₹ ${formatPaise(data.total)}`, strong: true });
 
@@ -21,10 +24,8 @@ export function ReceiptPreview({ data }: { data: ReceiptData }) {
     <article className="receipt print-area" aria-label={`Receipt ${data.billNo}`}>
       <header className="receipt__header">
         <h2>{data.clinicName}</h2>
-        {data.clinicAddressLines.map((line) => (
-          <p key={line}>{line}</p>
-        ))}
-        {contact.length > 0 && <p>{contact.join('  ·  ')}</p>}
+        {address && <p>{address}</p>}
+        {data.clinicPhone && <p>Ph {data.clinicPhone}</p>}
         {data.statusBanner && <p className="receipt__banner">{data.statusBanner}</p>}
       </header>
       <div className="receipt__meta">
@@ -45,7 +46,7 @@ export function ReceiptPreview({ data }: { data: ReceiptData }) {
         <tbody>
           {data.lines.map((line, index) => {
             const notSupplied = line.notSuppliedQty > 0;
-            const detail = notSupplied ? `Not supplied (out of stock) – prescribed ${line.notSuppliedQty}` : line.detail;
+            const detail = notSupplied ? `Not supplied (out of stock) – prescribed ${line.notSuppliedQty}` : null;
             const heading = line.section && line.section !== data.lines[index - 1]?.section ? line.section : null;
             return (
               <Fragment key={`${line.name}-${index}`}>
