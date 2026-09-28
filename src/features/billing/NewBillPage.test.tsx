@@ -5,12 +5,14 @@ import type { BillLineInput, Discount, Quote, SaleProduct, ServiceLineInput } fr
 import { AppContext, type AppContextValue } from '../../app/AppContext';
 import { t } from '../../i18n/en';
 import { loadBillDraft, saveBillDraft } from '../../lib/billDraft';
+import { rupees } from '../../lib/money';
 import { NewBillPage } from './NewBillPage';
 
 // The screen only talks to the API; every call is faked here (money itself is worked out in Rust).
 const mocks = vi.hoisted(() => ({
   quoteBill: vi.fn(),
   finalizeBill: vi.fn(),
+  listServices: vi.fn(),
 }));
 vi.mock('../../api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../api')>();
@@ -19,7 +21,7 @@ vi.mock('../../api', async (importOriginal) => {
     api: {
       searchClients: vi.fn(() => Promise.resolve([])),
       recentProductsForSale: vi.fn(() => Promise.resolve([])),
-      listServices: vi.fn(() => Promise.resolve([])),
+      listServices: mocks.listServices,
       getClinicSettings: vi.fn(() => Promise.resolve({ defaultMedicineDiscountPercent: 10 })),
       getClientProfile: vi.fn(() => Promise.reject(new Error('not used'))),
       checkClientDuplicates: vi.fn(() => Promise.resolve([])),
@@ -122,6 +124,7 @@ const lastDiscount = () => mocks.quoteBill.mock.lastCall?.[2] as Discount | unde
 
 beforeEach(() => {
   window.localStorage.clear();
+  mocks.listServices.mockResolvedValue([]);
   mocks.quoteBill.mockImplementation((lines: BillLineInput[], services: ServiceLineInput[], discount: Discount) => Promise.resolve(fakeQuote(lines, services, discount)));
 });
 afterEach(() => {
@@ -135,8 +138,48 @@ describe('New bill screen', () => {
     renderPage();
     await waitFor(() => expect(lastDiscount()).toEqual({ kind: 'PERCENT', value: 1000 }));
 
-    fireEvent.click(await screen.findByLabelText(t.billing.standardDiscount(10)));
+    fireEvent.click(await screen.findByLabelText(t.billing.discountOnMedicines));
     await waitFor(() => expect(lastDiscount()).toEqual({ kind: 'NONE' }));
+  });
+
+  it('lets the receptionist type another discount in the box', async () => {
+    draft({ lines: [{ product, qty: 2, notSuppliedQty: 0 }] });
+    renderPage();
+    const box = await screen.findByLabelText(t.billing.discountValue);
+    await waitFor(() => expect((box as HTMLInputElement).value).toBe('10'));
+    fireEvent.change(box, { target: { value: '5' } });
+    await waitFor(() => expect(lastDiscount()).toEqual({ kind: 'PERCENT', value: 500 }));
+
+    fireEvent.click(screen.getByLabelText(t.billing.discountAmountLabel));
+    fireEvent.change(box, { target: { value: '50' } });
+    await waitFor(() => expect(lastDiscount()).toEqual({ kind: 'AMOUNT', value: 5000 }));
+  });
+
+  it('offers one-click consultations under the box; one without a set price asks for the amount', async () => {
+    mocks.listServices.mockResolvedValue([
+      { id: 1, kind: 'CONSULTATION', name: 'General Consultation', defaultPricePaise: 40000, gstRateBp: 0, discountEligible: false, isActive: true, sortOrder: 1 },
+      { id: 2, kind: 'CONSULTATION', name: 'Follow-up Consultation', defaultPricePaise: 30000, gstRateBp: 0, discountEligible: false, isActive: true, sortOrder: 2 },
+      { id: 3, kind: 'CONSULTATION', name: 'Discounted Consultation', defaultPricePaise: 0, gstRateBp: 0, discountEligible: false, isActive: true, sortOrder: 3 },
+    ]);
+    renderPage();
+    fireEvent.click(await screen.findByRole('button', { name: t.billing.quickService('Follow-up Consultation', rupees(30000)) }));
+    await waitFor(() => expect(mocks.quoteBill).toHaveBeenCalled());
+    expect(mocks.quoteBill.mock.lastCall?.[1]).toEqual([{ serviceId: 2, kind: null, name: null, qty: 1, unitPricePaise: 30000 }]);
+
+    mocks.quoteBill.mockClear();
+    fireEvent.click(screen.getByRole('button', { name: t.billing.quickServiceTyped('Discounted Consultation') }));
+    // No amount yet: nothing is quoted and the bill cannot be saved until it is typed.
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 400));
+    });
+    expect(mocks.quoteBill).not.toHaveBeenCalled();
+    expect((screen.getByRole('button', { name: t.billing.finalizeOnly }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('shows the WhatsApp mobile box under the client name', async () => {
+    renderPage();
+    expect(await screen.findByLabelText(t.billing.clientName)).toBeTruthy();
+    expect(screen.getByLabelText(t.billing.newClientPhone)).toBeTruthy();
   });
 
   it('sends no discount when the bill has no medicines', async () => {

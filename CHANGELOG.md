@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.4.3 (unreleased): faster bill entry and stock import from CSV (2026-09-28)
+
+### New Bill
+- **Client details:** the **client's WhatsApp mobile number** box is directly under the client name.
+- **Consultations:** one-click buttons under the consultation box: **General Consultation ₹400**, **Follow-up Consultation ₹300** and **Discounted Consultation** (type the amount).
+  - On upgrade, General Consultation goes from ₹500 to ₹400, but only if the price was never changed in Settings → Services.
+  - Old bills are unchanged.
+- **Discount on medicines:**
+  - one box, prefilled with the standard 10%;
+  - type another % or switch to ₹;
+  - untick for no discount.
+- **Split payment** is a clear button: "e.g. part Cash + part UPI".
+
+### Inventory
+- **Import from CSV** (administrators) adds many deliveries from one sheet.
+  - **Columns:** Vendor Name, Product Name, MRP, Clinic Bought Price, Expiry Date (optional), Quantity.
+  - **Open empty sheet in Excel** gives the column names.
+  - **Before importing,** every row is checked and shown. Nothing is imported until all rows are correct; then everything goes in at once.
+  - **Importing the same file twice** is noticed and needs confirming.
+  - **New products and vendors** are added automatically.
+
 ## v0.4.2 (2026-09-28): drafts, keyboard use, invoice clean-up, dashboard that adds up, cheaper and safer CI
 
 ### Invoice

@@ -39,6 +39,11 @@ pub fn append(conn: &Connection, entry: &NewAuditEntry<'_>) -> rusqlite::Result<
     Ok(conn.last_insert_rowid())
 }
 
+/// When `action` last happened for `entity_id` (e.g. a stock import of the same file), if ever.
+pub fn last_occurrence(conn: &Connection, action: &str, entity_id: &str) -> rusqlite::Result<Option<i64>> {
+    conn.query_row("SELECT MAX(occurred_at) FROM audit_log WHERE action = ?1 AND entity_id = ?2", params![action, entity_id], |row| row.get(0))
+}
+
 /// Newest first; pass the smallest `id` of the previous page as `before_id` for the next page.
 pub fn list(conn: &Connection, limit: u32, before_id: Option<i64>) -> rusqlite::Result<Vec<AuditRecord>> {
     let mut stmt = conn.prepare(

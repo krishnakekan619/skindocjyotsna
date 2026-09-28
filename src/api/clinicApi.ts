@@ -37,6 +37,12 @@ export interface ClinicApi {
   stockIn(input: T.StockInInput): Promise<T.BatchRow>;
   /** Inventory → Add Inventory (receptionists too). */
   addInventory(input: T.AddInventoryInput): Promise<T.BatchRow>;
+  /** Inventory → Import from CSV (admin): checks the file, changes nothing. */
+  previewStockImport(text: string): Promise<T.ImportPreview>;
+  /** Imports every row of the file at once (all or none). */
+  importStock(text: string, requestKey: string, importAgain: boolean): Promise<T.ImportResult>;
+  /** Saves the empty import sheet and opens it (normally in Excel); returns where it was saved. */
+  openStockImportTemplate(): Promise<string>;
   /** Inventory → Delete (administrators): archives a product with history, removes an unused one. */
   deleteProduct(productId: number): Promise<T.DeleteOutcome>;
   adjustStock(input: T.AdjustInput): Promise<T.BatchRow>;

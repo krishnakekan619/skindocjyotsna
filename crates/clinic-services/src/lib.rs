@@ -16,6 +16,7 @@ pub mod maintenance;
 pub mod reports;
 pub mod settings;
 pub mod share;
+pub mod stock_import;
 pub mod users;
 
 use clinic_core::auth::{Permission, Role};

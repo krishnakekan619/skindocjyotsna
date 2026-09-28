@@ -5,6 +5,7 @@ use clinic_services::inventory::{
     self, AddInventoryInput, AdjustInput, CategoryInput, DeleteOutcome, ExpiringBatch, ProductDetail, ProductFilter, ProductInput, SaleProduct, StockInInput,
     SupplierInput,
 };
+use clinic_services::stock_import::{self, ImportPreview, ImportResult};
 use clinic_sqlite::repo::inventory::{BatchRow, Category, LedgerRow, ProductRow, Supplier};
 use tauri::State;
 
@@ -94,6 +95,37 @@ pub fn recent_products_for_sale(state: State<'_, AppState>) -> Result<Vec<SalePr
 pub fn add_inventory(state: State<'_, AppState>, input: AddInventoryInput) -> Result<BatchRow, CommandError> {
     let session = state.session(Permission::AddStock)?;
     Ok(inventory::add_inventory(&mut *state.db()?, &session, input, now())?)
+}
+
+/// Inventory → Import from CSV (administrators): checks every row of the file, changes nothing.
+#[tauri::command(async)]
+pub fn preview_stock_import(state: State<'_, AppState>, text: String) -> Result<ImportPreview, CommandError> {
+    let session = state.session(Permission::ManageInventory)?;
+    Ok(stock_import::preview(&*state.db()?, &session, &text, now())?)
+}
+
+/// Imports every row of a checked file in one transaction: all rows or none.
+#[tauri::command(async)]
+pub fn import_stock(state: State<'_, AppState>, text: String, request_key: String, import_again: bool) -> Result<ImportResult, CommandError> {
+    let session = state.session(Permission::ManageInventory)?;
+    Ok(stock_import::import(&mut *state.db()?, &session, &text, &request_key, import_again, now())?)
+}
+
+/// Saves the empty import sheet (just the column names) in the exports folder and opens it,
+/// normally in Excel. Returns where it was saved.
+#[tauri::command(async)]
+pub fn open_stock_import_template(state: State<'_, AppState>) -> Result<String, CommandError> {
+    state.session(Permission::ManageInventory)?;
+    let path = state.paths.export_dir.join(stock_import::TEMPLATE_FILE_NAME);
+    std::fs::write(&path, stock_import::TEMPLATE_CSV).map_err(|error| {
+        tracing::error!(%error, path = %path.display(), "could not write the import template");
+        CommandError::user("EXPORT_FAILED", "The sheet could not be saved. Check that the disk is not full.")
+    })?;
+    tauri_plugin_opener::open_path(&path, None::<&str>).map_err(|error| {
+        tracing::error!(%error, "could not open the import template");
+        CommandError::user("OPEN_FAILED", "The sheet was saved in the exports folder but could not be opened. Is Excel installed?")
+    })?;
+    Ok(path.display().to_string())
 }
 
 /// Inventory → Delete (administrators): archives a product with history, removes an unused one.

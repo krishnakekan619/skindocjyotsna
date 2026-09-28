@@ -77,6 +77,8 @@ let serviceKeys = 0;
 
 /** Search/type boxes stay compact so the whole bill fits on screen. */
 const INPUT_MAX_WIDTH = 560;
+/** One-click buttons under the consultation box: the first ones in Settings → Services order. */
+const QUICK_CONSULTATIONS = 3;
 
 /** What an unfinished bill keeps on this computer (not a correction: that starts from the bill). */
 interface DraftState {
@@ -87,9 +89,11 @@ interface DraftState {
   allowDuplicate: boolean;
   serviceLines: ServiceLine[];
   lines: Line[];
+  /** Discount on medicines ticked. */
   useStandard: boolean;
   discountKind: DiscountKind;
-  discountText: string;
+  /** What is typed in the discount box; null = the clinic's standard %. */
+  discountText: string | null;
   split: boolean;
   payments: PaymentDraft[];
   receivedText: string;
@@ -150,7 +154,8 @@ const fromCatalog = (service: ServiceRow): ServiceLine => ({
   name: service.name,
   defaultPricePaise: service.defaultPricePaise,
   qty: 1,
-  price: paiseToInput(service.defaultPricePaise),
+  // No set price (e.g. "Discounted Consultation"): the receptionist types the amount.
+  price: service.defaultPricePaise > 0 ? paiseToInput(service.defaultPricePaise) : '',
 });
 
 /**
@@ -187,9 +192,11 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
   const [partial, setPartial] = useState<{ product: SaleProduct; requested: number } | null>(null);
   // Discount: the clinic's standard medicine discount is ticked by default (DEC-034).
   const [standardPercent, setStandardPercent] = useState(0);
+  // Ticked by default with the clinic's standard % in the box; the receptionist can type another
+  // % or switch to a rupee amount (above the receptionist limit needs an administrator).
   const [useStandard, setUseStandard] = useState(draft?.useStandard ?? true);
-  const [discountKind, setDiscountKind] = useState<DiscountKind>(draft?.discountKind ?? 'NONE');
-  const [discountText, setDiscountText] = useState(draft?.discountText ?? '');
+  const [discountKind, setDiscountKind] = useState<DiscountKind>(draft && draft.discountKind !== 'NONE' ? draft.discountKind : 'PERCENT');
+  const [discountText, setDiscountText] = useState<string | null>(draft && draft.discountKind !== 'NONE' ? draft.discountText : null);
   // Payment
   const [split, setSplit] = useState(draft?.split ?? false);
   const [payments, setPayments] = useState<PaymentDraft[]>(draft?.payments ?? [{ method: 'CASH', amount: '', reference: '' }]);
@@ -298,13 +305,9 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
     [lines],
   );
   const hasProducts = lineInputs.some((l) => l.qty > 0);
-  const standardOn = useStandard && standardPercent > 0;
+  const discountInput = discountText ?? (discountKind === 'PERCENT' && standardPercent > 0 ? String(standardPercent) : '');
   // No medicines, no discount (it applies to medicines only): never send a hidden one.
-  const discount: Discount | null = !hasProducts
-    ? { kind: 'NONE' }
-    : standardOn
-      ? { kind: 'PERCENT', value: standardPercent * 100 }
-      : discountOf(discountKind, discountText);
+  const discount: Discount | null = !hasProducts || !useStandard ? { kind: 'NONE' } : discountOf(discountKind, discountInput);
   const servicesValid = serviceLines.every((s) => s.qty > 0 && s.price.trim() !== '' && parseRupees(s.price) !== null);
   const serviceInputs: ServiceLineInput[] = useMemo(
     () =>
@@ -398,7 +401,6 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
   // ---- Consultations and procedures ----
   const consultations = catalog.filter((s) => s.kind === 'CONSULTATION');
   const procedures = catalog.filter((s) => s.kind === 'PROCEDURE');
-  const standardConsultation = consultations[0];
   const addFromCatalog = (service: ServiceRow) => setServiceLines((current) => [...current, fromCatalog(service)]);
   /** A name typed on the bill: the list entry if it exists (any case), otherwise a new one. */
   const addTyped = (kind: ServiceKind, name: string) => {
@@ -448,8 +450,8 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
     setMatches([]);
     setAllowDuplicate(false);
     setUseStandard(true);
-    setDiscountKind('NONE');
-    setDiscountText('');
+    setDiscountKind('PERCENT');
+    setDiscountText(null);
     setSplit(false);
     setPayments([{ method: 'CASH', amount: '', reference: '' }]);
     setReceivedText('');
@@ -589,10 +591,9 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
               </Stack>
             ) : (
               <Stack spacing={1.5}>
-                <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
+                <Stack spacing={1.5} sx={{ maxWidth: INPUT_MAX_WIDTH }}>
                   <Autocomplete<ClientRow, false, false, true>
                     freeSolo
-                    sx={{ flexGrow: 1 }}
                     options={clientOptions}
                     value={null}
                     onChange={(_, option) => {
@@ -615,11 +616,13 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
                         </Box>
                       </li>
                     )}
-                    renderInput={(params) => <TextField {...params} label={t.clients.name} placeholder={t.billing.clientPlaceholder} inputRef={clientInput} autoFocus={!correcting} />}
+                    renderInput={(params) => <TextField {...params} label={t.billing.clientName} placeholder={t.billing.clientPlaceholder} inputRef={clientInput} autoFocus={!correcting} />}
                   />
-                  {typingNewClient && (
+                  {/* Below the name: used when the name is a new client (an existing one brings their own). */}
+                  {!nameIsNumber && (
                     <TextField
                       label={t.billing.newClientPhone}
+                      helperText={typingNewClient ? undefined : t.billing.newClientPhoneHint}
                       value={newPhone}
                       onChange={(e) => {
                         setNewPhone(e.target.value);
@@ -629,7 +632,6 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
                         if (e.key === 'Enter' && !e.ctrlKey && !e.metaKey) focusProduct();
                       }}
                       inputRef={phoneInput}
-                      sx={{ width: { xs: '100%', sm: 220 } }}
                       slotProps={{ htmlInput: { inputMode: 'tel' } }}
                     />
                   )}
@@ -692,11 +694,19 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
         {/* ---- Consultation, procedures, medicines ---- */}
         <Card variant="outlined">
           <CardContent>
-            <Section
-              title={t.billing.consultation}
-              actions={standardConsultation && <AddButton onClick={() => addFromCatalog(standardConsultation)}>{t.billing.addConsultation(rupees(standardConsultation.defaultPricePaise))}</AddButton>}
-            >
-              <ServiceTyper kind="CONSULTATION" options={consultations} placeholder={t.billing.typeConsultation} onPick={addFromCatalog} onTyped={addTyped} />
+            <Section title={t.billing.consultation}>
+              <ServiceTyper
+                kind="CONSULTATION"
+                options={consultations}
+                placeholder={t.billing.typeConsultation}
+                onPick={addFromCatalog}
+                onTyped={addTyped}
+                quick={consultations.slice(0, QUICK_CONSULTATIONS).map((s) => ({
+                  key: s.id,
+                  label: s.defaultPricePaise > 0 ? t.billing.quickService(s.name, rupees(s.defaultPricePaise)) : t.billing.quickServiceTyped(s.name),
+                  onClick: () => addFromCatalog(s),
+                }))}
+              />
               <ServiceRows lines={serviceLines.filter((s) => s.kind === 'CONSULTATION')} onChange={updateService} onRemove={removeService} showQty={false} />
             </Section>
             <Section title={t.billing.procedures}>
@@ -829,24 +839,44 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
           <Card variant="outlined">
             <CardContent>
               <Stack spacing={2}>
-                <Stack direction="row" spacing={2} sx={{ alignItems: 'center', flexWrap: 'wrap' }} useFlexGap>
-                  {standardPercent > 0 && (
-                    <FormControlLabel
-                      control={<Checkbox checked={useStandard} onChange={(e) => setUseStandard(e.target.checked)} />}
-                      label={t.billing.standardDiscount(standardPercent)}
-                      disabled={!hasProducts}
-                    />
-                  )}
-                  {!standardOn && (
-                    <>
-                      <Typography>{standardPercent > 0 ? t.billing.otherDiscount : t.billing.discountOnMedicines}</Typography>
-                      <ToggleButtonGroup size="small" exclusive value={discountKind} disabled={!hasProducts} onChange={(_, v: DiscountKind | null) => v && setDiscountKind(v)}>
-                        <ToggleButton value="NONE">{t.billing.discountNone}</ToggleButton>
-                        <ToggleButton value="PERCENT">{t.billing.discountPercent}</ToggleButton>
-                        <ToggleButton value="AMOUNT">{t.billing.discountAmount}</ToggleButton>
-                      </ToggleButtonGroup>
-                      {discountKind !== 'NONE' && hasProducts && <TextField size="small" value={discountText} onChange={(e) => setDiscountText(e.target.value)} error={discount === null} sx={{ width: 120 }} />}
-                    </>
+                <Stack direction="row" spacing={1.5} sx={{ alignItems: 'center', flexWrap: 'wrap' }} useFlexGap>
+                  <FormControlLabel
+                    control={<Checkbox checked={useStandard} onChange={(e) => setUseStandard(e.target.checked)} />}
+                    label={t.billing.discountOnMedicines}
+                    disabled={!hasProducts}
+                    sx={{ mr: 0 }}
+                  />
+                  <TextField
+                    size="small"
+                    value={discountInput}
+                    onChange={(e) => setDiscountText(e.target.value)}
+                    disabled={!hasProducts || !useStandard}
+                    error={useStandard && hasProducts && discount === null}
+                    sx={{ width: 90 }}
+                    slotProps={{ htmlInput: { inputMode: 'decimal', 'aria-label': t.billing.discountValue } }}
+                  />
+                  <ToggleButtonGroup
+                    size="small"
+                    exclusive
+                    value={discountKind === 'AMOUNT' ? 'AMOUNT' : 'PERCENT'}
+                    disabled={!hasProducts || !useStandard}
+                    onChange={(_, v: DiscountKind | null) => {
+                      if (!v) return;
+                      setDiscountKind(v);
+                      setDiscountText(v === 'PERCENT' ? null : ''); // % starts from the standard again
+                    }}
+                  >
+                    <ToggleButton value="PERCENT" aria-label={t.billing.discountPercentLabel}>
+                      {t.billing.discountPercent}
+                    </ToggleButton>
+                    <ToggleButton value="AMOUNT" aria-label={t.billing.discountAmountLabel}>
+                      {t.billing.discountAmount}
+                    </ToggleButton>
+                  </ToggleButtonGroup>
+                  {standardPercent > 0 && hasProducts && (
+                    <Typography variant="body2" color="text.secondary">
+                      {t.billing.standardIs(standardPercent)}
+                    </Typography>
                   )}
                   {!hasProducts && (
                     <Typography variant="body2" color="text.secondary">
@@ -870,16 +900,24 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
                     </ToggleButtonGroup>
                   )}
                   <Button
-                    size="small"
+                    variant="outlined"
                     onClick={() => {
                       setSplit(!split);
-                      setPayments([
-                        { method: 'CASH', amount: '', reference: '' },
-                        { method: 'UPI', amount: '', reference: '' },
-                      ]);
+                      setPayments(
+                        split
+                          ? [{ method: 'CASH', amount: '', reference: '' }]
+                          : [
+                              { method: 'CASH', amount: '', reference: '' },
+                              { method: 'UPI', amount: '', reference: '' },
+                            ],
+                      );
                     }}
+                    sx={{ flexDirection: 'column', alignItems: 'flex-start', lineHeight: 1.2, py: 0.75, textAlign: 'left' }}
                   >
-                    {split ? t.common.cancel : t.billing.split}
+                    <span>{split ? t.billing.singlePayment : t.billing.split}</span>
+                    <Typography component="span" variant="caption" color="text.secondary">
+                      {split ? t.billing.singlePaymentHint : t.billing.splitHint}
+                    </Typography>
                   </Button>
                 </Stack>
                 {split &&
@@ -1035,12 +1073,15 @@ function ServiceTyper({
   placeholder,
   onPick,
   onTyped,
+  quick = [],
 }: {
   kind: ServiceKind;
   options: ServiceRow[];
   placeholder: string;
   onPick: (s: ServiceRow) => void;
   onTyped: (kind: ServiceKind, name: string) => void;
+  /** One-click buttons shown beside Add, e.g. "+ General Consultation ₹400". */
+  quick?: { key: number; label: string; onClick: () => void }[];
 }) {
   const [text, setText] = useState('');
   const add = () => {
@@ -1076,9 +1117,17 @@ function ServiceTyper({
         )}
         renderInput={(params) => <TextField {...params} size="small" placeholder={placeholder} />}
       />
-      <AddButton disabled={!text.trim()} onClick={add}>
-        {text.trim() ? t.billing.addTyped(text.trim()) : t.billing.add}
-      </AddButton>
+      <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap' }} useFlexGap>
+        <AddButton disabled={!text.trim()} onClick={add}>
+          {text.trim() ? t.billing.addTyped(text.trim()) : t.billing.add}
+        </AddButton>
+        {!text.trim() &&
+          quick.map((q) => (
+            <AddButton key={q.key} onClick={q.onClick}>
+              {q.label}
+            </AddButton>
+          ))}
+      </Stack>
     </Stack>
   );
 }

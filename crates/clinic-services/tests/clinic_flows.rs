@@ -8,6 +8,7 @@ use clinic_services::auth::{self, NewAccount, SetupInput};
 use clinic_services::billing::{self, Approval, BillInput, BillLineInput, CorrectionInput, NewClientInput, PaymentInput, ReturnInput, ReturnLineInput, ServiceLineInput};
 use clinic_services::catalog::{self, ServiceInput};
 use clinic_services::share;
+use clinic_services::stock_import;
 use clinic_services::clients::{self, ClientInput};
 use clinic_services::inventory::{self, AdjustInput, ProductFilter, ProductInput, StockInInput};
 use clinic_services::reports::{self, DateRange};
@@ -500,18 +501,18 @@ fn typed_service(kind: &str, name: &str, price: i64) -> ServiceLineInput {
 fn consultation_and_procedures_are_billed_without_stock_or_discount() -> TestResult {
     let mut clinic = clinic()?;
     let (consultation, dressing) = consultation_and_dressing(&clinic)?;
-    // ₹500 consultation + ₹300 dressing + medicines 2 x ₹20 + 1 x ₹120; ₹10 off the medicines.
-    let mut input = bill("bill-key-0030", vec![line(clinic.paracetamol, 2), line(clinic.cream, 1)], Discount::Amount(Paise::new(1_000)), cash(95_000));
+    // ₹400 consultation + ₹300 dressing + medicines 2 x ₹20 + 1 x ₹120; ₹10 off the medicines.
+    let mut input = bill("bill-key-0030", vec![line(clinic.paracetamol, 2), line(clinic.cream, 1)], Discount::Amount(Paise::new(1_000)), cash(85_000));
     input.services = vec![service_line(consultation), service_line(dressing)];
     let quote = billing::quote(&clinic.db, &clinic.reception, &input.lines, &input.services, input.discount, None, NOW)?;
-    assert_eq!((quote.consultation_paise, quote.procedures_paise, quote.products_paise), (50_000, 30_000, 16_000));
+    assert_eq!((quote.consultation_paise, quote.procedures_paise, quote.products_paise), (40_000, 30_000, 16_000));
     assert_eq!(quote.eligible_subtotal_paise, 16_000);
     assert!(quote.service_lines.iter().all(|l| l.discount_share_paise == 0), "no discount on consultation/procedures");
-    assert_eq!(quote.total_paise, 95_000);
+    assert_eq!(quote.total_paise, 85_000);
 
     let done = billing::finalize(&mut clinic.db, &clinic.reception, input, NOW)?;
     assert_eq!(done.services.len(), 2);
-    assert_eq!(done.bill.total_paise, 95_000);
+    assert_eq!(done.bill.total_paise, 85_000);
     assert_eq!(sellable(&clinic, clinic.paracetamol)?, 98, "only products take stock");
     let receipt = billing::receipt(&clinic.db, &clinic.reception, done.bill.id)?;
     let sections: Vec<&str> = receipt.lines.iter().map(|l| l.section.as_str()).collect();
@@ -536,14 +537,14 @@ fn consultation_and_procedures_are_billed_without_stock_or_discount() -> TestRes
 fn a_consultation_alone_is_a_valid_bill_and_any_fee_can_be_typed() -> TestResult {
     let mut clinic = clinic()?;
     let (consultation, _) = consultation_and_dressing(&clinic)?;
-    let mut only = bill("bill-key-0031", Vec::new(), Discount::None, cash(50_000));
+    let mut only = bill("bill-key-0031", Vec::new(), Discount::None, cash(40_000));
     only.services = vec![service_line(consultation)];
-    assert_eq!(billing::finalize(&mut clinic.db, &clinic.reception, only, NOW)?.bill.total_paise, 50_000);
+    assert_eq!(billing::finalize(&mut clinic.db, &clinic.reception, only, NOW)?.bill.total_paise, 40_000, "General Consultation is ₹400 (migration 0008)");
 
     // The amount typed at the desk is charged, even below the usual fee (DEC-034: no approval).
-    let mut cheaper = bill("bill-key-0032", Vec::new(), Discount::None, cash(40_000));
-    cheaper.services = vec![ServiceLineInput { unit_price_paise: Some(40_000), ..service_line(consultation) }];
-    assert_eq!(billing::finalize(&mut clinic.db, &clinic.reception, cheaper, NOW)?.bill.total_paise, 40_000);
+    let mut cheaper = bill("bill-key-0032", Vec::new(), Discount::None, cash(25_000));
+    cheaper.services = vec![ServiceLineInput { unit_price_paise: Some(25_000), ..service_line(consultation) }];
+    assert_eq!(billing::finalize(&mut clinic.db, &clinic.reception, cheaper, NOW)?.bill.total_paise, 25_000);
 
     let empty = billing::finalize(&mut clinic.db, &clinic.reception, bill("bill-key-0033", Vec::new(), Discount::None, Vec::new()), NOW);
     assert!(matches!(empty, Err(ServiceError::Validation { field: "lines", .. })));
@@ -692,12 +693,12 @@ fn the_standard_medicine_discount_stays_within_the_receptionist_limit() -> TestR
 fn the_dashboard_splits_sales_and_lists_top_sellers() -> TestResult {
     let mut clinic = clinic()?;
     let (consultation, dressing) = consultation_and_dressing(&clinic)?;
-    let mut input = bill("bill-key-0090", vec![line(clinic.paracetamol, 2)], Discount::None, cash(50_000 + 30_000 + 4_000));
+    let mut input = bill("bill-key-0090", vec![line(clinic.paracetamol, 2)], Discount::None, cash(40_000 + 30_000 + 4_000));
     input.services = vec![service_line(consultation), service_line(dressing)];
     billing::finalize(&mut clinic.db, &clinic.reception, input, NOW)?;
     let dash = reports::dashboard(&clinic.db, &clinic.reception, NOW)?;
     let split = &dash.sales_split_today;
-    assert_eq!((split.consultation_paise, split.procedures_paise, split.medicines_paise), (50_000, 30_000, 4_000));
+    assert_eq!((split.consultation_paise, split.procedures_paise, split.medicines_paise), (40_000, 30_000, 4_000));
 
     let range = DateRange { from: "2026-09-25".into(), to: "2026-09-25".into() };
     let top = reports::top_sellers(&clinic.db, &clinic.reception, &range)?;
@@ -711,11 +712,11 @@ fn the_dashboard_splits_sales_and_lists_top_sellers() -> TestResult {
 fn the_dashboard_split_adds_up_to_the_money_figures() -> TestResult {
     let mut clinic = clinic()?;
     let (consultation, _) = consultation_and_dressing(&clinic)?;
-    // ₹500 consultation + ₹20.00 − ₹0.51 medicine = ₹519.49, rounded to ₹519.00 (round-off −49 paise).
-    let mut input = bill("bill-key-0095", vec![line(clinic.paracetamol, 1)], Discount::Amount(Paise::new(51)), cash(51_900));
+    // ₹400 consultation + ₹20.00 − ₹0.51 medicine = ₹419.49, rounded to ₹419.00 (round-off −49 paise).
+    let mut input = bill("bill-key-0095", vec![line(clinic.paracetamol, 1)], Discount::Amount(Paise::new(51)), cash(41_900));
     input.services = vec![service_line(consultation)];
     let done = billing::finalize(&mut clinic.db, &clinic.reception, input, NOW)?;
-    assert_eq!((done.bill.total_paise, done.bill.round_off_paise), (51_900, -49));
+    assert_eq!((done.bill.total_paise, done.bill.round_off_paise), (41_900, -49));
     billing::return_items(
         &mut clinic.db,
         &clinic.reception,
@@ -918,5 +919,57 @@ fn a_deactivated_user_loses_the_session_and_bills_keep_their_client() -> TestRes
     let done = billing::finalize(&mut clinic.db, &clinic.owner, input, NOW)?;
     let cleared = clinic.db.write(|c| c.execute("UPDATE bill SET client_id = NULL WHERE id = ?1", [done.bill.id]));
     assert!(cleared.is_err(), "a bill can never be detached from its client");
+    Ok(())
+}
+
+// ---- v0.4.3: stock import from a CSV file ---------------------------------------------------------
+
+const STOCK_CSV: &str = "Vendor Name,Product Name,MRP,Clinic Bought Price,Expiry Date,Quantity
+Derma Pharma,Sunscreen SPF 50,650,480,31-12-2027,10
+derma pharma,Moisturising Soap,120,80,,24
+Skin Labs,Paracetamol 500mg,25,15,12-2027,50
+";
+
+#[test]
+fn a_csv_file_imports_every_delivery_at_once_and_only_once() -> TestResult {
+    let mut clinic = clinic()?;
+    let before = sellable(&clinic, clinic.paracetamol)?;
+    assert!(matches!(stock_import::preview(&clinic.db, &clinic.reception, STOCK_CSV, NOW), Err(ServiceError::PermissionDenied)), "administrators only");
+
+    let preview = stock_import::preview(&clinic.db, &clinic.owner, STOCK_CSV, NOW)?;
+    assert_eq!((preview.rows.len(), preview.error_rows, preview.total_qty), (3, 0, 84));
+    assert_eq!((preview.new_products, preview.new_vendors), (2, 2), "Paracetamol exists; 'derma pharma' is the same vendor");
+    assert_eq!(preview.imported_before_at, None);
+
+    let done = stock_import::import(&mut clinic.db, &clinic.owner, STOCK_CSV, "import-key-0001", false, NOW)?;
+    assert_eq!((done.rows, done.new_products, done.new_vendors, done.total_qty), (3, 2, 2, 84));
+    assert_eq!(sellable(&clinic, clinic.paracetamol)?, before + 50);
+    let soap = inventory::list_products(&clinic.db, &clinic.owner, ProductFilter { text: "Moisturising".into(), ..Default::default() }, NOW)?;
+    assert_eq!(soap.first().map(|p| (p.sellable_qty, p.next_expiry.clone())), Some((24, None)), "no expiry date is allowed");
+    assert_eq!(inventory::list_suppliers(&clinic.db, &clinic.owner)?.iter().filter(|s| s.name.eq_ignore_ascii_case("derma pharma")).count(), 1);
+
+    // A double-click or retry of the same request adds nothing.
+    stock_import::import(&mut clinic.db, &clinic.owner, STOCK_CSV, "import-key-0001", false, NOW)?;
+    assert_eq!(sellable(&clinic, clinic.paracetamol)?, before + 50);
+    // The same file again is noticed and refused unless confirmed.
+    assert!(stock_import::preview(&clinic.db, &clinic.owner, STOCK_CSV, NOW)?.imported_before_at.is_some());
+    assert!(matches!(stock_import::import(&mut clinic.db, &clinic.owner, STOCK_CSV, "import-key-0002", false, NOW), Err(ServiceError::Conflict(_))));
+    stock_import::import(&mut clinic.db, &clinic.owner, STOCK_CSV, "import-key-0003", true, NOW)?;
+    assert_eq!(sellable(&clinic, clinic.paracetamol)?, before + 100);
+    assert_ledger_consistent(&clinic)
+}
+
+#[test]
+fn a_csv_file_with_any_wrong_row_imports_nothing() -> TestResult {
+    let mut clinic = clinic()?;
+    let before = sellable(&clinic, clinic.paracetamol)?;
+    let text = format!("{STOCK_CSV}Derma Pharma,Old Cream,100,60,01-01-2020,5
+");
+    let preview = stock_import::preview(&clinic.db, &clinic.owner, &text, NOW)?;
+    assert_eq!(preview.error_rows, 1);
+    assert!(preview.rows[3].errors.iter().any(|e| e.contains("already passed")));
+    assert!(matches!(stock_import::import(&mut clinic.db, &clinic.owner, &text, "import-key-0010", false, NOW), Err(ServiceError::NotAllowed(_))));
+    assert_eq!(sellable(&clinic, clinic.paracetamol)?, before, "the good rows were not imported either");
+    assert!(inventory::list_products(&clinic.db, &clinic.owner, ProductFilter { text: "Sunscreen".into(), ..Default::default() }, NOW)?.is_empty());
     Ok(())
 }

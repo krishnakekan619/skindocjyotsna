@@ -153,6 +153,41 @@ export interface ProductFilter {
   limit?: number;
 }
 
+/** stock_import::ImportRow: one row of an import file as understood, with its problems. */
+export interface ImportRow {
+  line: number;
+  vendorName: string;
+  productName: string;
+  mrpPaise: Paise | null;
+  purchasePricePaise: Paise | null;
+  expiryDate: IsoDate | null;
+  qty: number | null;
+  newProduct: boolean;
+  newVendor: boolean;
+  errors: string[];
+  warnings: string[];
+}
+
+/** stock_import::ImportPreview */
+export interface ImportPreview {
+  fileId: string;
+  rows: ImportRow[];
+  errorRows: number;
+  newProducts: number;
+  newVendors: number;
+  totalQty: number;
+  /** When this same file was imported before, if it was. */
+  importedBeforeAt: Timestamp | null;
+}
+
+/** stock_import::ImportResult */
+export interface ImportResult {
+  rows: number;
+  newProducts: number;
+  newVendors: number;
+  totalQty: number;
+}
+
 /** inventory::AddInventoryInput: the one-screen stock form. */
 export interface AddInventoryInput {
   productId: number | null;

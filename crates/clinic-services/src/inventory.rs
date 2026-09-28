@@ -384,109 +384,118 @@ pub fn add_inventory(db: &mut Database, actor: &Session, input: AddInventoryInpu
             }
         }
         let (_, today) = clinic_today(c, now)?;
-        if expiry < today {
-            return Err(invalid("expiryDate", "This stock has already expired; it cannot be added."));
-        }
-        // Vendor: chosen from the list, or typed (found by name, or added).
-        let vendor_id = match input.vendor_id {
-            Some(id) => repo::list_suppliers(c)?.into_iter().find(|s| s.id == id).map(|s| s.id).ok_or(ServiceError::NotFound("vendor"))?,
-            None => {
-                let name = input.vendor_name.trim();
-                if name.is_empty() || chars(name) > 100 {
-                    return Err(invalid("vendorName", "Vendor name is required (at most 100 characters)."));
-                }
-                match repo::list_suppliers(c)?.into_iter().find(|s| s.name.to_lowercase() == name.to_lowercase()) {
-                    Some(existing) => existing.id,
-                    None => {
-                        let id = repo::insert_supplier(c, name, "", "", true)?;
-                        audit::record(c, now, Actor::from(actor), "SUPPLIER_CREATE", Some(("supplier", id.to_string())), Some(json!({ "name": name, "addedWithStock": true })))?;
-                        id
-                    }
-                }
-            }
-        };
-        // Product: chosen from the list, or typed (found by name, or added with its type).
-        let today_text = today.to_string();
-        let (product, is_new) = match input.product_id {
-            Some(id) => (repo::find_product(c, id, &today_text)?.ok_or(ServiceError::NotFound("product"))?, false),
-            None => {
-                let name = input.product_name.trim();
-                if name.is_empty() || chars(name) > 120 {
-                    return Err(invalid("productName", "Product name is required (at most 120 characters)."));
-                }
-                // Exact name (any case), active first: "Tretinoin 0.025%" is found as typed.
-                let same_name = match repo::find_product_id_by_name(c, name)? {
-                    Some(id) => repo::find_product(c, id, &today_text)?,
-                    None => None,
-                };
-                match same_name {
-                    Some(existing) => (existing, false),
-                    None => {
-                        if let Some(type_id) = input.type_id {
-                            if !repo::list_categories(c)?.iter().any(|t| t.id == type_id && t.is_active) {
-                                return Err(ServiceError::NotAllowed("The selected product type no longer exists.".into()));
-                            }
-                        }
-                        let sku = new_sku(c)?;
-                        let fields = ProductFields {
-                            sku: &sku,
-                            name,
-                            generic_name: "",
-                            category_id: input.type_id,
-                            product_type: "OTHER",
-                            manufacturer: "",
-                            unit: "pcs",
-                            gst_rate_bp: 0,
-                            default_selling_price_paise: input.mrp_paise,
-                            default_purchase_price_paise: input.purchase_price_paise,
-                            min_stock: 0,
-                            requires_expiry: true,
-                            is_active: true,
-                            notes: "",
-                        };
-                        let id = repo::insert_product(c, &fields, now)?;
-                        audit::record(c, now, Actor::from(actor), "PRODUCT_CREATE", Some(("product", id.to_string())), Some(json!({ "sku": sku, "addedWithStock": true })))?;
-                        (repo::find_product(c, id, &today_text)?.ok_or(ServiceError::NotFound("product"))?, true)
-                    }
-                }
-            }
-        };
-        if !product.is_active {
-            return Err(ServiceError::NotAllowed(format!("{} is archived. An administrator can restore it under Inventory → Update.", product.name)));
-        }
-        // Prices shown in lists follow the latest delivery, set by an administrator; a
-        // receptionist's delivery keeps its own prices on the lot.
-        if !is_new && actor.role.allows(Permission::ManageInventory) {
-            repo::update_product_prices(c, product.id, input.mrp_paise, input.purchase_price_paise, now)?;
-        }
-        // Skip numbers already used by a hand-typed batch number, or this product would be stuck.
-        let lot_no = loop {
-            let candidate = format!("LOT-{:06}", next_number(c, "LOT", "ALL")?);
-            if repo::find_batch_by_no(c, product.id, &candidate)?.is_none() {
-                break candidate;
-            }
-        };
-        let expiry_text = expiry.to_string();
-        let batch_id = repo::insert_batch(
-            c,
-            &NewBatch {
-                product_id: product.id,
-                batch_no: &lot_no,
-                expiry_date: Some(&expiry_text),
-                supplier_id: Some(vendor_id),
-                purchase_price_paise: input.purchase_price_paise,
-                selling_price_paise: input.mrp_paise,
-                now,
-            },
-        )?;
-        repo::apply_movement(c, &Movement { batch_id, kind: "PURCHASE", qty_change: input.qty, reason: "Stock received", bill_id: None, sales_return_id: None, user_id: actor.user_id, now })?
-            .ok_or_else(|| ServiceError::Corrupt("add inventory failed".into()))?;
+        let batch_id = add_delivery_in_tx(c, actor, &input, Some(expiry), today, now)?;
         if let Some(key) = request_key {
             repo::set_batch_request_key(c, batch_id, key)?;
         }
-        audit::record(c, now, Actor::from(actor), "STOCK_IN", Some(("batch", batch_id.to_string())), Some(json!({ "product": product.sku, "lot": lot_no, "qty": input.qty, "mrp": input.mrp_paise })))?;
         repo::find_batch(c, batch_id)?.ok_or(ServiceError::NotFound("batch"))
     })
+}
+
+/// One delivery inside the caller's transaction: finds or adds the vendor and the product, makes
+/// a lot with a made-up number and records the stock received. Used by Add Inventory and by the
+/// CSV import (where the expiry date is optional). Amounts are checked by the caller.
+pub(crate) fn add_delivery_in_tx(c: &Connection, actor: &Session, input: &AddInventoryInput, expiry: Option<Date>, today: Date, now: i64) -> Result<i64, ServiceError> {
+    if expiry.is_some_and(|e| e < today) {
+        return Err(invalid("expiryDate", "This stock has already expired; it cannot be added."));
+    }
+    // Vendor: chosen from the list, or typed (found by name, or added).
+    let vendor_id = match input.vendor_id {
+        Some(id) => repo::list_suppliers(c)?.into_iter().find(|s| s.id == id).map(|s| s.id).ok_or(ServiceError::NotFound("vendor"))?,
+        None => {
+            let name = input.vendor_name.trim();
+            if name.is_empty() || chars(name) > 100 {
+                return Err(invalid("vendorName", "Vendor name is required (at most 100 characters)."));
+            }
+            match repo::list_suppliers(c)?.into_iter().find(|s| s.name.to_lowercase() == name.to_lowercase()) {
+                Some(existing) => existing.id,
+                None => {
+                    let id = repo::insert_supplier(c, name, "", "", true)?;
+                    audit::record(c, now, Actor::from(actor), "SUPPLIER_CREATE", Some(("supplier", id.to_string())), Some(json!({ "name": name, "addedWithStock": true })))?;
+                    id
+                }
+            }
+        }
+    };
+    // Product: chosen from the list, or typed (found by name, or added with its type).
+    let today_text = today.to_string();
+    let (product, is_new) = match input.product_id {
+        Some(id) => (repo::find_product(c, id, &today_text)?.ok_or(ServiceError::NotFound("product"))?, false),
+        None => {
+            let name = input.product_name.trim();
+            if name.is_empty() || chars(name) > 120 {
+                return Err(invalid("productName", "Product name is required (at most 120 characters)."));
+            }
+            // Exact name (any case), active first: "Tretinoin 0.025%" is found as typed.
+            let same_name = match repo::find_product_id_by_name(c, name)? {
+                Some(id) => repo::find_product(c, id, &today_text)?,
+                None => None,
+            };
+            match same_name {
+                Some(existing) => (existing, false),
+                None => {
+                    if let Some(type_id) = input.type_id {
+                        if !repo::list_categories(c)?.iter().any(|t| t.id == type_id && t.is_active) {
+                            return Err(ServiceError::NotAllowed("The selected product type no longer exists.".into()));
+                        }
+                    }
+                    let sku = new_sku(c)?;
+                    let fields = ProductFields {
+                        sku: &sku,
+                        name,
+                        generic_name: "",
+                        category_id: input.type_id,
+                        product_type: "OTHER",
+                        manufacturer: "",
+                        unit: "pcs",
+                        gst_rate_bp: 0,
+                        default_selling_price_paise: input.mrp_paise,
+                        default_purchase_price_paise: input.purchase_price_paise,
+                        min_stock: 0,
+                        // Imported without an expiry date (e.g. a soap): not asked for later.
+                        requires_expiry: expiry.is_some(),
+                        is_active: true,
+                        notes: "",
+                    };
+                    let id = repo::insert_product(c, &fields, now)?;
+                    audit::record(c, now, Actor::from(actor), "PRODUCT_CREATE", Some(("product", id.to_string())), Some(json!({ "sku": sku, "addedWithStock": true })))?;
+                    (repo::find_product(c, id, &today_text)?.ok_or(ServiceError::NotFound("product"))?, true)
+                }
+            }
+        }
+    };
+    if !product.is_active {
+        return Err(ServiceError::NotAllowed(format!("{} is archived. An administrator can restore it under Inventory → Update.", product.name)));
+    }
+    // Prices shown in lists follow the latest delivery, set by an administrator; a
+    // receptionist's delivery keeps its own prices on the lot.
+    if !is_new && actor.role.allows(Permission::ManageInventory) {
+        repo::update_product_prices(c, product.id, input.mrp_paise, input.purchase_price_paise, now)?;
+    }
+    // Skip numbers already used by a hand-typed batch number, or this product would be stuck.
+    let lot_no = loop {
+        let candidate = format!("LOT-{:06}", next_number(c, "LOT", "ALL")?);
+        if repo::find_batch_by_no(c, product.id, &candidate)?.is_none() {
+            break candidate;
+        }
+    };
+    let expiry_text = expiry.map(|e| e.to_string());
+    let batch_id = repo::insert_batch(
+        c,
+        &NewBatch {
+            product_id: product.id,
+            batch_no: &lot_no,
+            expiry_date: expiry_text.as_deref(),
+            supplier_id: Some(vendor_id),
+            purchase_price_paise: input.purchase_price_paise,
+            selling_price_paise: input.mrp_paise,
+            now,
+        },
+    )?;
+    repo::apply_movement(c, &Movement { batch_id, kind: "PURCHASE", qty_change: input.qty, reason: "Stock received", bill_id: None, sales_return_id: None, user_id: actor.user_id, now })?
+        .ok_or_else(|| ServiceError::Corrupt("add inventory failed".into()))?;
+    audit::record(c, now, Actor::from(actor), "STOCK_IN", Some(("batch", batch_id.to_string())), Some(json!({ "product": product.sku, "lot": lot_no, "qty": input.qty, "mrp": input.mrp_paise })))?;
+    Ok(batch_id)
 }
 
 #[derive(Debug, Clone, Serialize)]

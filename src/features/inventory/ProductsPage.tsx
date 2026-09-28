@@ -29,6 +29,7 @@ import { shownBatchNo } from '../../lib/batch';
 import { rupees } from '../../lib/money';
 import { LedgerTable } from './LedgerPage';
 import { AddInventoryDialog } from './AddInventoryDialog';
+import { ImportStockDialog } from './ImportStockDialog';
 import { ProductDialog } from './ProductDialog';
 import { AdjustDialog, StockInDialog } from './StockDialogs';
 
@@ -45,6 +46,7 @@ export function ProductsPage() {
   const [limit, setLimit] = useState(PAGE);
   const [editing, setEditing] = useState<ProductRow | null>(null);
   const [adding, setAdding] = useState(false);
+  const [importing, setImporting] = useState(false);
   const [deleting, setDeleting] = useState<ProductRow | null>(null);
   const [detail, setDetail] = useState<number | null>(null);
 
@@ -70,9 +72,16 @@ export function ProductsPage() {
       <PageHeader
         title={t.products.title}
         actions={
-          <Button variant="contained" onClick={() => setAdding(true)}>
-            + {t.products.addInventory}
-          </Button>
+          <Stack direction="row" spacing={1}>
+            {isAdmin && (
+              <Button variant="outlined" onClick={() => setImporting(true)}>
+                {t.stockImport.button}
+              </Button>
+            )}
+            <Button variant="contained" onClick={() => setAdding(true)}>
+              + {t.products.addInventory}
+            </Button>
+          </Stack>
         }
       />
       <Stack direction="row" spacing={2} sx={{ mb: 2, alignItems: 'center', flexWrap: 'wrap' }} useFlexGap>
@@ -178,6 +187,17 @@ export function ProductsPage() {
           onSaved={(b) => {
             setAdding(false);
             notify(t.products.added(b.quantity, b.productName));
+            reload();
+            suppliers.reload();
+          }}
+        />
+      )}
+      {importing && (
+        <ImportStockDialog
+          onClose={() => setImporting(false)}
+          onImported={(r) => {
+            setImporting(false);
+            notify(t.stockImport.imported(r.rows, r.totalQty));
             reload();
             suppliers.reload();
           }}
