@@ -98,11 +98,12 @@ jobs:
       - name: Dependency audit (npm, including build tools)
         run: npm audit --audit-level=high
 
-      # Quality checks: report only for now (DEC-038). They show their findings in the log and as
-      # annotations but do not fail the run; they become blocking once the findings are fixed.
+      # Quality checks: report only for now (DEC-038). Findings are printed as warnings, so every
+      # crate is checked in one run (an error would stop at the first crate). They become blocking
+      # ("-- -D warnings") once the findings are fixed.
       - name: Rust lints (clippy, report only)
         continue-on-error: true
-        run: cargo clippy --workspace --exclude skindocjyotsna --all-targets -- -D warnings
+        run: cargo clippy --workspace --exclude skindocjyotsna --all-targets
 
       - name: Rust formatting (rustfmt, report only)
         continue-on-error: true
@@ -191,7 +192,7 @@ jobs:
       - name: Rust lints incl. app shell (clippy, report only)
         if: runner.os == 'Windows'
         continue-on-error: true
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

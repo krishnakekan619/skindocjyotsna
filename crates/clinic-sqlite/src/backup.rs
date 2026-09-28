@@ -264,7 +264,7 @@ fn backup_times(dir: &Path, kind: BackupKind) -> Result<Vec<(i64, PathBuf)>, DbE
 /// automatic backups: manual and pre-restore backups are never deleted automatically.
 pub fn prune_backups(dir: &Path, kind: BackupKind, keep: usize) -> Result<usize, DbError> {
     let mut backups = backup_times(dir, kind)?;
-    backups.sort_by(|a, b| b.0.cmp(&a.0));
+    backups.sort_by_key(|b| std::cmp::Reverse(b.0));
     let mut removed = 0;
     for (_, path) in backups.into_iter().skip(keep) {
         fs::remove_file(&path)?;

@@ -1,0 +1,5 @@
+# Clippy settings for the whole workspace (lint levels are in Cargo.toml [workspace.lints]).
+# unwrap()/expect() stay warnings in app code, where a panic would stop the app, but are fine in
+# tests, where a panic is simply a failed test.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true

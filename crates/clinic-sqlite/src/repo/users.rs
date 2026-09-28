@@ -193,7 +193,7 @@ mod tests {
             Ok(())
         });
         assert!(result.is_err());
-        assert_eq!(db.read(|c| count(c))?, 0, "the first insert must be rolled back too");
+        assert_eq!(db.read(count)?, 0, "the first insert must be rolled back too");
         Ok(())
     }
 }
