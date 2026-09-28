@@ -257,6 +257,7 @@ export const t = {
     empty: 'No products found.',
     batches: 'Batches',
     batchNo: 'Batch no.',
+    addedOn: 'Added on',
     expiry: 'Expiry',
     supplier: 'Vendor',
     noSupplier: 'No vendor',

@@ -34,7 +34,7 @@ export function ExpiryPage() {
             <TableHead>
               <TableRow>
                 <TableCell>{t.products.name}</TableCell>
-                <TableCell>{t.products.batchNo}</TableCell>
+                <TableCell>{t.products.supplier}</TableCell>
                 <TableCell>{t.products.expiry}</TableCell>
                 <TableCell>{t.expiry.daysLeft}</TableCell>
                 <TableCell align="right">{t.common.qty}</TableCell>
@@ -44,7 +44,7 @@ export function ExpiryPage() {
               {data.map((b) => (
                 <TableRow key={b.id}>
                   <TableCell>{b.productName}</TableCell>
-                  <TableCell>{b.batchNo}</TableCell>
+                  <TableCell>{b.supplierName ?? '—'}</TableCell>
                   <TableCell>{formatExpiry(b.expiryDate)}</TableCell>
                   <TableCell>
                     {b.daysLeft < 0 ? (

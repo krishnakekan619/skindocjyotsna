@@ -24,7 +24,8 @@ import { api, type BatchRow, type ProductRow, type StockFilter } from '../../api
 import { useApp } from '../../app/AppContext';
 import { ConfirmDialog, EmptyState, ErrorAlert, Loading, PageHeader, StatusChip, useLoader, rowActions } from '../../components/common';
 import { t } from '../../i18n/en';
-import { addDaysIso, formatExpiry, todayIso } from '../../lib/dates';
+import { addDaysIso, formatDateTime, formatExpiry, todayIso } from '../../lib/dates';
+import { shownBatchNo } from '../../lib/batch';
 import { rupees } from '../../lib/money';
 import { LedgerTable } from './LedgerPage';
 import { AddInventoryDialog } from './AddInventoryDialog';
@@ -239,7 +240,7 @@ function ProductDetailDialog({ productId, suppliers, onClose, onChanged }: { pro
         ) : (
           <Stack spacing={2}>
             <Typography color="text.secondary">
-              {[data.product.genericName, data.product.manufacturer, t.products.types[data.product.productType], data.product.categoryName].filter(Boolean).join(' · ')}
+              {[data.product.genericName, data.product.manufacturer, data.product.categoryName].filter(Boolean).join(' · ')}
             </Typography>
             <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
               {t.products.batches}
@@ -250,7 +251,7 @@ function ProductDetailDialog({ productId, suppliers, onClose, onChanged }: { pro
               <Table size="small">
                 <TableHead>
                   <TableRow>
-                    <TableCell>{t.products.batchNo}</TableCell>
+                    <TableCell>{t.products.addedOn}</TableCell>
                     <TableCell>{t.products.expiry}</TableCell>
                     <TableCell>{t.products.supplier}</TableCell>
                     <TableCell align="right">{t.common.price}</TableCell>
@@ -261,7 +262,15 @@ function ProductDetailDialog({ productId, suppliers, onClose, onChanged }: { pro
                 <TableBody>
                   {data.batches.map((b) => (
                     <TableRow key={b.id}>
-                      <TableCell>{b.batchNo}</TableCell>
+                      <TableCell>
+                        {formatDateTime(b.createdAt)}
+                        {shownBatchNo(b.batchNo) && (
+                          <Typography component="span" variant="body2" color="text.secondary">
+                            {' · '}
+                            {t.products.batchNo} {b.batchNo}
+                          </Typography>
+                        )}
+                      </TableCell>
                       <TableCell>
                         {formatExpiry(b.expiryDate)} {b.expiryDate !== null && b.expiryDate < today && <StatusChip label={t.products.expired} color="error" />}
                       </TableCell>

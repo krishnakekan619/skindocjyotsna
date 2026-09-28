@@ -521,11 +521,11 @@ export function NewBillPage({ initialClientId, correcting }: { initialClientId?:
     [busy, itemCount, quote, discount, billKey, client, clientText, newPhone, allowDuplicate, lineInputs, serviceInputs, total, parsedPayments, received, note, correcting, reason],
   );
 
-  // F2: client search, F4: product search, Ctrl/Cmd+Enter (or F9): finalize & print.
+  // F2 or Ctrl/Cmd+K: client search, F4: product search, Ctrl/Cmd+Enter (or F9): finalize & print.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (status.locked) return;
-      if (e.key === 'F2') {
+      if (e.key === 'F2' || ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'k')) {
         e.preventDefault();
         clientInput.current?.focus();
       } else if (e.key === 'F4') {

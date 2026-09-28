@@ -14,6 +14,8 @@
   - a bill being typed survives a crash, a restart or the idle lock, and comes back with a notice and a **Discard** button;
   - it keeps the same bill key, so a bill saved just before a crash is never saved twice;
   - it is removed at Finalize, Clear bill and sign-out (one per user; not for corrections).
+- **Ctrl/⌘+K** jumps to client search: the client box on the bill screen, otherwise the Clients page (v0.3 brief §28).
+- **Automatic lot numbers** (`LOT-000123`) are no longer shown to staff (DEC-036): product details show when stock was added, the expiry list shows the vendor, and the dashboard and returns show only hand-typed batch numbers. The stock ledger and reports keep them for tracing. Product details no longer show the old fixed product type.
 - **Keyboard:** every clickable row and dashboard tile can be reached with Tab and opened with Enter or Space, with a visible focus outline.
 
 ### Dashboard and system

@@ -28,7 +28,7 @@ type NavItem = { page: Page; label: string; adminOnly?: boolean };
 /** The three everyday actions, always visible at the top (v0.3 brief §2). */
 const MAIN_ACTIONS: { page: Page; label: string; icon: string; hint?: string }[] = [
   { page: { name: 'newBill' }, label: t.nav.newBill, icon: '+', hint: `${MOD_KEY}+N` },
-  { page: { name: 'clients' }, label: t.nav.clients, icon: '👤' },
+  { page: { name: 'clients' }, label: t.nav.clients, icon: '👤', hint: `${MOD_KEY}+K` },
   { page: { name: 'products' }, label: t.nav.products, icon: '📦' },
 ];
 
@@ -110,12 +110,16 @@ export function MainLayout({ status, session, setStatus }: { status: AppStatus; 
   useIdleLock(status.idleLockMinutes, lock);
 
   // Ctrl/Cmd+N (or F1): new bill from anywhere (brief §28). Does not clear a bill in progress.
+  // Ctrl/Cmd+K: client search (the Clients page; on the bill screen, its own client box).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (status.locked) return;
       if (e.key === 'F1' || ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'n')) {
         e.preventDefault();
         setPage((current) => (current.name === 'newBill' ? current : { name: 'newBill' }));
+      } else if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setPage((current) => (current.name === 'newBill' || current.name === 'clients' ? current : { name: 'clients' }));
       }
     };
     window.addEventListener('keydown', onKey);

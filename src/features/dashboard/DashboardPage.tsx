@@ -21,6 +21,7 @@ import { useApp } from '../../app/AppContext';
 import { EmptyState, ErrorAlert, Loading, PageHeader, StatusChip, useLoader, rowActions } from '../../components/common';
 import { MOD_KEY, t } from '../../i18n/en';
 import { addDaysIso, formatDateTime, formatExpiry, monthStartIso, todayIso } from '../../lib/dates';
+import { shownBatchNo } from '../../lib/batch';
 import { rupees } from '../../lib/money';
 import { BillStatusChip } from '../billing/BillStatusChip';
 
@@ -275,7 +276,8 @@ export function DashboardPage() {
                       <TableRow key={b.id} hover sx={{ cursor: 'pointer' }} {...rowActions(() => navigate({ name: 'expiry' }))}>
                         <TableCell>{b.productName}</TableCell>
                         <TableCell>
-                          {b.batchNo} · {formatExpiry(b.expiryDate)}
+                          {shownBatchNo(b.batchNo) && `${b.batchNo} · `}
+                          {formatExpiry(b.expiryDate)}
                         </TableCell>
                         <TableCell align="right">{b.quantity}</TableCell>
                         <TableCell align="right">

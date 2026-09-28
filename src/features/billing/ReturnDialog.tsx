@@ -18,6 +18,7 @@ import {
 import { api, PAYMENT_METHODS, type BillDetail, type PaymentMethod } from '../../api';
 import { ErrorAlert } from '../../components/common';
 import { t } from '../../i18n/en';
+import { shownBatchNo } from '../../lib/batch';
 import { rupees } from '../../lib/money';
 
 /** Returns some or all of a bill's items; the refund amount is worked out in Rust. */
@@ -69,7 +70,10 @@ export function ReturnDialog({ detail, onClose, onDone }: { detail: BillDetail; 
                   <TableRow key={item.id}>
                     <TableCell>
                       {item.productName}
-                      {item.batches.length > 0 && ` (${item.batches.map((b) => b.batchNo).join(', ')})`}
+                      {(() => {
+                        const typed = item.batches.map((b) => shownBatchNo(b.batchNo)).filter(Boolean);
+                        return typed.length > 0 ? ` (${typed.join(', ')})` : null;
+                      })()}
                     </TableCell>
                     <TableCell align="right">
                       {item.qty}
