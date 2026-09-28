@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.4.2 (unreleased): drafts, keyboard use, dashboard that adds up, CI hardening (2026-09-27)
+## v0.4.2 (2026-09-28): drafts, keyboard use, invoice clean-up, dashboard that adds up, cheaper and safer CI
 
 ### Invoice
 - The clinic name comes from **Settings → Clinic**. New installs start with "Dr Jyotsna's SkinDoc Clinic"; on an existing install, type it there once.
