@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.4.3 (unreleased): faster bill entry and stock import from CSV (2026-09-28)
+## v0.4.3 (2026-09-28): faster bill entry and stock import from CSV
 
 ### New Bill
 - **Client details:** the **client's WhatsApp mobile number** box is directly under the client name.
