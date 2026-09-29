@@ -139,8 +139,26 @@ export const t = {
     times: (n: number) => `${n}×`,
   },
   stockImport: {
-    button: 'Import from CSV',
+    button: 'Import CSV',
+    exportButton: 'Export CSV',
+    exportFailed: 'The stock could not be exported.',
+    exported: (path: string) => `Stock saved to ${path}`,
     title: 'Import stock from a CSV file',
+    modeLabel: 'What does this file contain?',
+    modes: {
+      ADD: 'New deliveries',
+      UPDATE: 'Changes to my stock (an edited export)',
+    },
+    modeHints: {
+      ADD: 'Every row is added as new stock.',
+      UPDATE: 'Rows with a Lot ID change that lot (quantity, MRP, bought price, expiry). Rows without a Lot ID are added as new deliveries.',
+    },
+    updateRules: [
+      'Start from Inventory → Export CSV, edit it in Excel, save it as CSV and choose it here.',
+      'Do not change the Lot ID, Product Name, Vendor Name or Stock When Exported columns.',
+      'Quantity 0 means the lot is used up. A lot sold from since the export is refused: export again.',
+      'Add new deliveries as new rows with the Lot ID left empty.',
+    ],
     intro: 'Fill in one row per delivery in Excel with these columns (the first row must be the column names), then save it as CSV and choose it here.',
     rules: [
       'Expiry Date is optional. Write it day first, like 31-12-2027, or month and year, like 12-2027 (the last day of that month is used).',
@@ -153,12 +171,14 @@ export const t = {
     choose: 'Choose CSV file',
     chooseAgain: 'Choose the corrected file',
     hasErrors: (n: number) => `${n} row(s) have a problem (in red). Correct them in Excel, save, and choose the file again. Nothing has been imported.`,
-    ready: (rows: number, qty: number, products: number, vendors: number) =>
-      `All ${rows} rows are correct: ${qty} units in total, ${products} new product(s), ${vendors} new vendor(s).`,
+    ready: (added: number, updated: number, unchanged: number, qty: number) =>
+      `All rows are correct: ${added} to add (${qty} units), ${updated} to update, ${unchanged} unchanged.`,
     importedBefore: (when: string) => `This same file was already imported on ${when}. Importing it again adds the stock a second time.`,
     importAgain: 'These are new deliveries: import again',
-    importRows: (n: number) => (n > 0 ? `Import ${n} rows` : 'Import'),
-    imported: (rows: number, qty: number) => `Imported ${rows} rows (${qty} units).`,
+    importRows: (n: number) => (n > 0 ? `Save ${n} row(s)` : 'Save'),
+    imported: (added: number, updated: number) => `Stock saved: ${added} added, ${updated} updated.`,
+    lotId: 'Lot ID',
+    actions: { ADD: 'Add', UPDATE: 'Update', UNCHANGED: 'No change' },
     line: 'Line',
     check: 'Check',
     ok: 'OK',

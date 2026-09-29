@@ -1,37 +1,66 @@
-//! Inventory → Import from CSV (administrators, DEC-041): many deliveries from one sheet.
+//! Inventory → Import / Export CSV (administrators, DEC-041, DEC-042).
 //!
 //! Columns (first row, any order, extra columns ignored): Vendor Name, Product Name, MRP, Clinic
-//! Bought Price, Expiry Date (optional), Quantity. Every row becomes one delivery exactly as with
-//! Add Inventory (same vendor/product matching, a made-up lot number, the audit entry).
+//! Bought Price, Expiry Date (optional), Quantity; an export adds Lot ID, Stock When Exported and
+//! Status.
+//!
+//! Two import modes:
+//! - **Add**: every row is a new delivery, exactly like one Add Inventory. Rows with a Lot ID
+//!   (from an export) are refused, so an exported file can never add the same stock twice.
+//! - **Update**: rows with a Lot ID change that lot (quantity, MRP, bought price, expiry); rows
+//!   without one are added as new deliveries. A quantity is changed only if the lot still has the
+//!   stock it had when exported, so an edited file never undoes sales made meanwhile. Importing
+//!   the same file again changes nothing.
 //!
 //! Nothing is imported until every row is correct, and then all rows go in together in ONE
-//! transaction. A file already imported once is refused unless the admin confirms, and a repeated
-//! request (double-click, retry) adds nothing.
+//! transaction.
 
 use std::collections::HashSet;
 
 use clinic_core::auth::Permission;
+use clinic_core::money::Paise;
 use clinic_core::time::Date;
 use clinic_sqlite::Database;
 use clinic_sqlite::repo::audit as audit_repo;
-use clinic_sqlite::repo::inventory as repo;
+use clinic_sqlite::repo::inventory::{self as repo, BatchRow, Movement};
 use clinic_sqlite::rusqlite::Connection;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::audit::{self, Actor};
 use crate::auth::verify_actor;
 use crate::error::invalid;
-use crate::inventory::{AddInventoryInput, add_delivery_in_tx};
+use crate::inventory::{AddInventoryInput, EXPIRY_WARNING_DAYS, add_delivery_in_tx};
 use crate::settings::clinic_today;
 use crate::{ServiceError, Session};
 
-pub const MAX_FILE_BYTES: usize = 1_000_000;
-pub const MAX_ROWS: usize = 2_000;
+pub const MAX_FILE_BYTES: usize = 2_000_000;
+pub const MAX_ROWS: usize = 5_000;
 /// The empty sheet the admin fills in (opened in Excel by the app).
 pub const TEMPLATE_CSV: &str = "Vendor Name,Product Name,MRP,Clinic Bought Price,Expiry Date,Quantity\r\n";
 pub const TEMPLATE_FILE_NAME: &str = "Stock-import-sheet.csv";
+const EXPORT_HEADER: &str = "Lot ID,Vendor Name,Product Name,MRP,Clinic Bought Price,Expiry Date,Quantity,Stock When Exported,Status\r\n";
 const IMPORT_ACTION: &str = "STOCK_IMPORT";
+/// Stock movements made by an Update import are "adjustments" with this reason in the ledger.
+const UPDATE_REASON: &str = "CSV update";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum ImportMode {
+    /// Every row is a new delivery.
+    Add,
+    /// Rows with a Lot ID update that lot; others are new deliveries.
+    Update,
+}
+
+/// What importing a row will do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum RowAction {
+    Add,
+    Update,
+    Unchanged,
+}
 
 /// One row of the file as understood, with anything wrong with it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -39,6 +68,8 @@ const IMPORT_ACTION: &str = "STOCK_IMPORT";
 pub struct ImportRow {
     /// Line number in the file (the column names are line 1).
     pub line: usize,
+    /// The lot this row came from (an exported file); none = a new delivery.
+    pub lot_id: Option<i64>,
     pub vendor_name: String,
     pub product_name: String,
     pub mrp_paise: Option<i64>,
@@ -46,6 +77,13 @@ pub struct ImportRow {
     /// `YYYY-MM-DD`; none = no expiry date.
     pub expiry_date: Option<String>,
     pub qty: Option<i64>,
+    /// "Stock When Exported" from the file.
+    pub exported_qty: Option<i64>,
+    /// The lot's stock now (Update rows).
+    pub current_qty: Option<i64>,
+    pub action: RowAction,
+    /// What an Update row changes, e.g. "Quantity 10 → 7".
+    pub changes: Vec<String>,
     /// First row of a product not in the list yet: it will be added.
     pub new_product: bool,
     /// First row of a vendor not in the list yet: it will be added.
@@ -59,86 +97,185 @@ pub struct ImportRow {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportPreview {
-    /// Identifies the file's content, so importing the same file twice can be noticed.
+    pub mode: ImportMode,
+    /// Identifies the file's content, so adding the same file twice can be noticed.
     pub file_id: String,
     pub rows: Vec<ImportRow>,
     pub error_rows: usize,
+    pub added: usize,
+    pub updated: usize,
+    pub unchanged: usize,
     pub new_products: usize,
     pub new_vendors: usize,
+    /// Units in the rows that are added.
     pub total_qty: i64,
-    /// When this same file was imported before (Unix seconds), if it was.
+    /// When this same file was added before (Unix seconds), if it was (Add mode).
     pub imported_before_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportResult {
-    pub rows: usize,
+    pub added: usize,
+    pub updated: usize,
+    pub unchanged: usize,
     pub new_products: usize,
     pub new_vendors: usize,
     pub total_qty: i64,
 }
 
+/// A CSV of the stock in hand (one row per lot with stock), ready to edit and import back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StockExport {
+    pub file_name: String,
+    pub csv: String,
+    pub rows: usize,
+}
+
+// ---- export -------------------------------------------------------------------------------------
+
+/// Every lot with stock, soonest expiry first per product. Starts with a byte-order mark so Excel
+/// reads names with ₹, é, etc. correctly.
+pub fn export(db: &Database, actor: &Session, now: i64) -> Result<StockExport, ServiceError> {
+    actor.require(Permission::ManageInventory)?;
+    db.read(|c| {
+        let (_, today) = clinic_today(c, now)?;
+        let soon = today.add_days(EXPIRY_WARNING_DAYS);
+        let batches = repo::batches_in_stock(c)?;
+        let mut csv = String::from('\u{feff}');
+        csv.push_str(EXPORT_HEADER);
+        for b in &batches {
+            let expiry = b.expiry_date.as_deref().and_then(Date::parse);
+            let status = match expiry {
+                Some(e) if e < today => "Expired",
+                Some(e) if e <= soon => "Expires soon",
+                _ => "",
+            };
+            let fields = [
+                b.id.to_string(),
+                b.supplier_name.clone().unwrap_or_default(),
+                b.product_name.clone(),
+                plain_rupees(b.selling_price_paise),
+                plain_rupees(b.purchase_price_paise),
+                expiry.map(day_first).unwrap_or_default(),
+                b.quantity.to_string(),
+                b.quantity.to_string(),
+                status.to_string(),
+            ];
+            csv.push_str(&fields.iter().map(|f| csv_field(f)).collect::<Vec<_>>().join(","));
+            csv.push_str("\r\n");
+        }
+        Ok(StockExport { file_name: format!("Inventory-{today}.csv"), csv, rows: batches.len() })
+    })
+}
+
+/// 65000 -> "650.00" (no ₹ or commas, so Excel keeps it a number).
+fn plain_rupees(paise: i64) -> String {
+    format!("{}.{:02}", paise / 100, paise % 100)
+}
+
+/// 2027-12-31 -> "31-12-2027", the way the import reads dates.
+fn day_first(date: Date) -> String {
+    format!("{:02}-{:02}-{}", date.day, date.month, date.year)
+}
+
+/// One CSV cell: quoted when needed, and never a formula (a name starting with = + - @ would run
+/// as a formula when the file is opened in Excel: "CSV injection").
+fn csv_field(value: &str) -> String {
+    let safe = if value.starts_with(['=', '+', '-', '@', '\t', '\r']) { format!("'{value}") } else { value.to_string() };
+    if safe.contains([',', '"', '\n', '\r']) || safe.starts_with(' ') || safe.ends_with(' ') {
+        format!("\"{}\"", safe.replace('"', "\"\""))
+    } else {
+        safe
+    }
+}
+
+/// Undoes `csv_field`'s formula guard: "'=abc" -> "=abc".
+fn without_formula_guard(value: &str) -> &str {
+    match value.strip_prefix('\'') {
+        Some(rest) if rest.starts_with(['=', '+', '-', '@']) => rest,
+        _ => value,
+    }
+}
+
+// ---- preview and import -------------------------------------------------------------------------
+
 /// Checks the file and shows what would be imported. Changes nothing.
-pub fn preview(db: &Database, actor: &Session, text: &str, now: i64) -> Result<ImportPreview, ServiceError> {
+pub fn preview(db: &Database, actor: &Session, text: &str, mode: ImportMode, now: i64) -> Result<ImportPreview, ServiceError> {
     actor.require(Permission::ManageInventory)?;
     let (file_id, mut rows) = parse_file(text)?;
     db.read(|c| {
         let (_, today) = clinic_today(c, now)?;
-        annotate(c, &mut rows, today)?;
-        let imported_before_at = audit_repo::last_occurrence(c, IMPORT_ACTION, &file_id)?;
-        let error_rows = rows.iter().filter(|r| !r.errors.is_empty()).count();
-        let new_products = rows.iter().filter(|r| r.new_product).count();
-        let new_vendors = rows.iter().filter(|r| r.new_vendor).count();
-        let total_qty = rows.iter().filter_map(|r| r.qty).sum();
-        Ok(ImportPreview { file_id, rows, error_rows, new_products, new_vendors, total_qty, imported_before_at })
+        annotate(c, &mut rows, mode, today)?;
+        let imported_before_at = match mode {
+            ImportMode::Add => audit_repo::last_occurrence(c, IMPORT_ACTION, &file_id)?,
+            ImportMode::Update => None,
+        };
+        let count = |action: RowAction| rows.iter().filter(|r| r.errors.is_empty() && r.action == action).count();
+        Ok(ImportPreview {
+            mode,
+            error_rows: rows.iter().filter(|r| !r.errors.is_empty()).count(),
+            added: count(RowAction::Add),
+            updated: count(RowAction::Update),
+            unchanged: count(RowAction::Unchanged),
+            new_products: rows.iter().filter(|r| r.new_product).count(),
+            new_vendors: rows.iter().filter(|r| r.new_vendor).count(),
+            total_qty: added_qty(&rows),
+            imported_before_at,
+            file_id,
+            rows,
+        })
     })
 }
 
-/// Imports every row, all in one transaction. Refused if any row has a problem, or if this file
-/// was imported before and `import_again` is not set. `request_key` is made once per dialog: the
-/// same request sent again adds nothing.
-pub fn import(db: &mut Database, actor: &Session, text: &str, request_key: &str, import_again: bool, now: i64) -> Result<ImportResult, ServiceError> {
+/// Imports every row, all in one transaction. Refused if any row has a problem, or (Add mode) if
+/// this file was added before and `import_again` is not set. `request_key` is made once per
+/// dialog: the same request sent again adds nothing.
+pub fn import(db: &mut Database, actor: &Session, text: &str, mode: ImportMode, request_key: &str, import_again: bool, now: i64) -> Result<ImportResult, ServiceError> {
     actor.require(Permission::ManageInventory)?;
     let key = request_key.trim();
     if key.is_empty() || key.len() > 40 || !key.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-') {
         return Err(invalid("requestKey", "Invalid request. Please open Import again."));
     }
     let (file_id, mut rows) = parse_file(text)?;
-    let total_qty: i64 = rows.iter().filter_map(|r| r.qty).sum();
     db.write(|c| {
         verify_actor(c, actor)?;
-        // The same request again (double-click, retry): the first time already imported it all.
-        if repo::find_batch_by_request_key(c, &format!("{key}-1"))?.is_some() {
-            return Ok(ImportResult { rows: rows.len(), new_products: 0, new_vendors: 0, total_qty });
+        // The same request again (double-click, retry): the first time already added its rows.
+        let first_added = rows.iter().position(|r| r.lot_id.is_none());
+        if let Some(index) = first_added {
+            if repo::find_batch_by_request_key(c, &format!("{key}-{}", index + 1))?.is_some() {
+                return Ok(ImportResult { added: 0, updated: 0, unchanged: rows.len(), new_products: 0, new_vendors: 0, total_qty: 0 });
+            }
         }
         let (_, today) = clinic_today(c, now)?;
-        annotate(c, &mut rows, today)?;
+        annotate(c, &mut rows, mode, today)?;
         let bad = rows.iter().filter(|r| !r.errors.is_empty()).count();
         if bad > 0 {
             return Err(ServiceError::NotAllowed(format!("{bad} row(s) have a problem. Nothing was imported: correct the file, save it and choose it again.")));
         }
-        if !import_again && audit_repo::last_occurrence(c, IMPORT_ACTION, &file_id)?.is_some() {
+        if mode == ImportMode::Add && !import_again && audit_repo::last_occurrence(c, IMPORT_ACTION, &file_id)?.is_some() {
             return Err(ServiceError::Conflict("This file was already imported. Tick \"Import again\" only if these are new deliveries.".into()));
         }
-        let new_products = rows.iter().filter(|r| r.new_product).count();
-        let new_vendors = rows.iter().filter(|r| r.new_vendor).count();
+        let mut result = ImportResult {
+            added: 0,
+            updated: 0,
+            unchanged: 0,
+            new_products: rows.iter().filter(|r| r.new_product).count(),
+            new_vendors: rows.iter().filter(|r| r.new_vendor).count(),
+            total_qty: added_qty(&rows),
+        };
         for (index, row) in rows.iter().enumerate() {
-            let input = AddInventoryInput {
-                product_id: None,
-                product_name: row.product_name.clone(),
-                type_id: None,
-                vendor_id: None,
-                vendor_name: row.vendor_name.clone(),
-                mrp_paise: row.mrp_paise.unwrap_or(0),
-                purchase_price_paise: row.purchase_price_paise.unwrap_or(0),
-                expiry_date: row.expiry_date.clone(),
-                qty: row.qty.unwrap_or(0),
-                request_key: None,
-            };
-            let expiry = row.expiry_date.as_deref().and_then(Date::parse);
-            let batch_id = add_delivery_in_tx(c, actor, &input, expiry, today, now)?;
-            repo::set_batch_request_key(c, batch_id, &format!("{key}-{}", index + 1))?;
+            match row.action {
+                RowAction::Add => {
+                    add_row(c, actor, row, &format!("{key}-{}", index + 1), today, now)?;
+                    result.added += 1;
+                }
+                RowAction::Update => {
+                    update_row(c, actor, row, now)?;
+                    result.updated += 1;
+                }
+                RowAction::Unchanged => result.unchanged += 1,
+            }
         }
         audit::record(
             c,
@@ -146,44 +283,123 @@ pub fn import(db: &mut Database, actor: &Session, text: &str, request_key: &str,
             Actor::from(actor),
             IMPORT_ACTION,
             Some(("stock_import", file_id.clone())),
-            Some(json!({ "rows": rows.len(), "newProducts": new_products, "newVendors": new_vendors, "totalQty": total_qty })),
+            Some(json!({ "mode": mode, "added": result.added, "updated": result.updated, "unchanged": result.unchanged, "totalQty": result.total_qty })),
         )?;
-        Ok(ImportResult { rows: rows.len(), new_products, new_vendors, total_qty })
+        Ok(result)
     })
+}
+
+fn added_qty(rows: &[ImportRow]) -> i64 {
+    rows.iter().filter(|r| r.action == RowAction::Add).filter_map(|r| r.qty).sum()
+}
+
+fn add_row(c: &Connection, actor: &Session, row: &ImportRow, row_key: &str, today: Date, now: i64) -> Result<(), ServiceError> {
+    let input = AddInventoryInput {
+        product_id: None,
+        product_name: row.product_name.clone(),
+        type_id: None,
+        vendor_id: None,
+        vendor_name: row.vendor_name.clone(),
+        mrp_paise: row.mrp_paise.unwrap_or(0),
+        purchase_price_paise: row.purchase_price_paise.unwrap_or(0),
+        expiry_date: row.expiry_date.clone(),
+        qty: row.qty.unwrap_or(0),
+        request_key: None,
+    };
+    let expiry = row.expiry_date.as_deref().and_then(Date::parse);
+    let batch_id = add_delivery_in_tx(c, actor, &input, expiry, today, now)?;
+    repo::set_batch_request_key(c, batch_id, row_key)?;
+    Ok(())
+}
+
+/// Applies an Update row (already checked by `annotate`, in the same transaction).
+fn update_row(c: &Connection, actor: &Session, row: &ImportRow, now: i64) -> Result<(), ServiceError> {
+    let lot_id = row.lot_id.ok_or_else(|| ServiceError::Corrupt("update row without a lot".into()))?;
+    let batch = repo::find_batch(c, lot_id)?.ok_or(ServiceError::NotFound("lot"))?;
+    let (mrp, bought, qty) = (row.mrp_paise.unwrap_or(batch.selling_price_paise), row.purchase_price_paise.unwrap_or(batch.purchase_price_paise), row.qty.unwrap_or(batch.quantity));
+    if qty != batch.quantity {
+        let movement = Movement { batch_id: batch.id, kind: "ADJUSTMENT", qty_change: qty - batch.quantity, reason: UPDATE_REASON, bill_id: None, sales_return_id: None, user_id: actor.user_id, now };
+        repo::apply_movement(c, &movement)?.ok_or_else(|| ServiceError::Corrupt("CSV update failed".into()))?;
+    }
+    let details_changed = mrp != batch.selling_price_paise || bought != batch.purchase_price_paise || row.expiry_date != batch.expiry_date;
+    if details_changed {
+        repo::update_batch_details(c, batch.id, row.expiry_date.as_deref(), batch.supplier_id, bought, mrp, now)?;
+        // The prices shown in the product list follow the latest change.
+        repo::update_product_prices(c, batch.product_id, mrp, bought, now)?;
+    }
+    audit::record(
+        c,
+        now,
+        Actor::from(actor),
+        "STOCK_CSV_UPDATE",
+        Some(("batch", batch.id.to_string())),
+        Some(json!({
+            "qty": [batch.quantity, qty],
+            "mrp": [batch.selling_price_paise, mrp],
+            "bought": [batch.purchase_price_paise, bought],
+            "expiry": [batch.expiry_date, row.expiry_date],
+        })),
+    )?;
+    Ok(())
 }
 
 // ---- checks that need the database -------------------------------------------------------------
 
-/// Expired stock, archived products, and which products and vendors are new.
-fn annotate(c: &Connection, rows: &mut [ImportRow], today: Date) -> Result<(), ServiceError> {
+/// What each row will do, and everything that stops it: expired stock, archived products, rows
+/// from an export in Add mode, lots whose stock changed since the export.
+fn annotate(c: &Connection, rows: &mut [ImportRow], mode: ImportMode, today: Date) -> Result<(), ServiceError> {
     let known_vendors: HashSet<String> = repo::list_suppliers(c)?.into_iter().map(|s| s.name.to_lowercase()).collect();
     let mut seen_vendors = HashSet::new();
     let mut seen_products = HashSet::new();
+    let mut seen_lots = HashSet::new();
     let today_text = today.to_string();
     for row in rows.iter_mut() {
-        if let Some(expiry) = row.expiry_date.as_deref().and_then(Date::parse) {
-            if expiry < today {
-                row.errors.push(format!("Expiry {} has already passed: expired stock cannot be added.", expiry.display()));
+        match row.lot_id {
+            Some(lot_id) if mode == ImportMode::Add => {
+                row.action = RowAction::Unchanged;
+                row.errors.push(format!(
+                    "Row from an export (Lot ID {lot_id}): adding it would count this stock twice. Choose \"Update existing stock\", or delete the Lot ID to add it as a new delivery."
+                ));
             }
-        }
-        if !row.vendor_name.is_empty() {
-            let vendor = row.vendor_name.to_lowercase();
-            if !known_vendors.contains(&vendor) && seen_vendors.insert(vendor) {
-                row.new_vendor = true;
+            Some(lot_id) => {
+                if !seen_lots.insert(lot_id) {
+                    row.errors.push(format!("Lot ID {lot_id} appears more than once in the file."));
+                }
+                match repo::find_batch(c, lot_id)? {
+                    Some(batch) => check_update(row, &batch, today),
+                    None => row.errors.push(format!("Lot ID {lot_id} does not exist. Delete the Lot ID to add this row as a new delivery.")),
+                }
             }
-        }
-        if !row.product_name.is_empty() {
-            match repo::find_product_id_by_name(c, &row.product_name)? {
-                Some(id) => {
-                    if let Some(product) = repo::find_product(c, id, &today_text)? {
-                        if !product.is_active {
-                            row.errors.push(format!("{} is archived. Restore it under Inventory → Update first, or remove this row.", product.name));
-                        }
+            None => {
+                row.action = RowAction::Add;
+                if row.qty == Some(0) {
+                    row.errors.push("Quantity must be at least 1 for a new delivery.".to_string());
+                }
+                if let Some(expiry) = row.expiry_date.as_deref().and_then(Date::parse) {
+                    if expiry < today {
+                        row.errors.push(format!("Expiry {} has already passed: expired stock cannot be added.", expiry.display()));
                     }
                 }
-                None => {
-                    if seen_products.insert(row.product_name.to_lowercase()) {
-                        row.new_product = true;
+                if !row.vendor_name.is_empty() {
+                    let vendor = row.vendor_name.to_lowercase();
+                    if !known_vendors.contains(&vendor) && seen_vendors.insert(vendor) {
+                        row.new_vendor = true;
+                    }
+                }
+                if !row.product_name.is_empty() {
+                    match repo::find_product_id_by_name(c, &row.product_name)? {
+                        Some(id) => {
+                            if let Some(product) = repo::find_product(c, id, &today_text)? {
+                                if !product.is_active {
+                                    row.errors.push(format!("{} is archived. Restore it under Inventory → Update first, or remove this row.", product.name));
+                                }
+                            }
+                        }
+                        None => {
+                            if seen_products.insert(row.product_name.to_lowercase()) {
+                                row.new_product = true;
+                            }
+                        }
                     }
                 }
             }
@@ -192,22 +408,72 @@ fn annotate(c: &Connection, rows: &mut [ImportRow], today: Date) -> Result<(), S
     Ok(())
 }
 
+/// An Update row against its lot: same product and vendor, and a quantity change only if nothing
+/// was sold or returned from the lot since the export.
+fn check_update(row: &mut ImportRow, batch: &BatchRow, today: Date) {
+    row.current_qty = Some(batch.quantity);
+    if !row.product_name.eq_ignore_ascii_case(&batch.product_name) {
+        row.errors.push(format!("Lot ID {} is \"{}\": the product name cannot be changed here.", batch.id, batch.product_name));
+    }
+    if let Some(vendor) = batch.supplier_name.as_deref() {
+        if !row.vendor_name.eq_ignore_ascii_case(vendor) {
+            row.errors.push(format!("Lot ID {} is from \"{vendor}\": the vendor cannot be changed here.", batch.id));
+        }
+    }
+    let mut changes = Vec::new();
+    if let Some(qty) = row.qty {
+        if qty != batch.quantity {
+            match row.exported_qty {
+                None => row.errors.push("\"Stock When Exported\" is missing: keep that column from the export.".to_string()),
+                Some(exported) if exported == batch.quantity => changes.push(format!("Quantity {} → {qty}", batch.quantity)),
+                Some(exported) => row.errors.push(format!(
+                    "The stock changed since the export (then {exported}, now {}): something was sold or returned. Export again and redo this row.",
+                    batch.quantity
+                )),
+            }
+        }
+    }
+    if let Some(mrp) = row.mrp_paise.filter(|m| *m != batch.selling_price_paise) {
+        changes.push(format!("MRP {} → {}", money(batch.selling_price_paise), money(mrp)));
+    }
+    if let Some(bought) = row.purchase_price_paise.filter(|b| *b != batch.purchase_price_paise) {
+        changes.push(format!("Bought price {} → {}", money(batch.purchase_price_paise), money(bought)));
+    }
+    if row.expiry_date != batch.expiry_date {
+        let shown = |d: Option<&str>| d.and_then(Date::parse).map_or_else(|| "none".to_string(), Date::display);
+        changes.push(format!("Expiry {} → {}", shown(batch.expiry_date.as_deref()), shown(row.expiry_date.as_deref())));
+        if let Some(expiry) = row.expiry_date.as_deref().and_then(Date::parse) {
+            if expiry < today {
+                row.errors.push(format!("The new expiry {} has already passed.", expiry.display()));
+            }
+        }
+    }
+    row.action = if changes.is_empty() { RowAction::Unchanged } else { RowAction::Update };
+    row.changes = changes;
+}
+
+fn money(paise: i64) -> String {
+    format!("₹{}", Paise::new(paise).to_indian_string())
+}
+
 // ---- reading the file ---------------------------------------------------------------------------
 
 #[derive(Clone, Copy)]
 struct Columns {
+    lot: Option<usize>,
     vendor: usize,
     product: usize,
     mrp: usize,
     bought: usize,
     expiry: Option<usize>,
     qty: usize,
+    exported_qty: Option<usize>,
 }
 
 /// The file's id and its rows, each already checked on its own.
 fn parse_file(text: &str) -> Result<(String, Vec<ImportRow>), ServiceError> {
     if text.len() > MAX_FILE_BYTES {
-        return Err(invalid("file", "The file is larger than 1 MB. Split it into smaller files."));
+        return Err(invalid("file", "The file is larger than 2 MB. Split it into smaller files."));
     }
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let mut records = split_records(text, delimiter_of(text))?.into_iter();
@@ -218,17 +484,21 @@ fn parse_file(text: &str) -> Result<(String, Vec<ImportRow>), ServiceError> {
     let mut rows = Vec::new();
     for (line, fields) in records {
         if rows.len() >= MAX_ROWS {
-            return Err(invalid("file", "At most 2,000 rows can be imported at a time. Split the file into smaller files."));
+            return Err(invalid("file", "At most 5,000 rows can be imported at a time. Split the file into smaller files."));
         }
-        let cell = |index: Option<usize>| index.and_then(|i| fields.get(i)).map(|s| s.trim().to_string()).unwrap_or_default();
+        let cell = |index: Option<usize>| index.and_then(|i| fields.get(i)).map(|s| without_formula_guard(s.trim()).to_string()).unwrap_or_default();
         rows.push(check_row(
             line,
-            cell(Some(columns.vendor)),
-            cell(Some(columns.product)),
-            &cell(Some(columns.mrp)),
-            &cell(Some(columns.bought)),
-            &cell(columns.expiry),
-            &cell(Some(columns.qty)),
+            RawRow {
+                lot: cell(columns.lot),
+                vendor: cell(Some(columns.vendor)),
+                product: cell(Some(columns.product)),
+                mrp: cell(Some(columns.mrp)),
+                bought: cell(Some(columns.bought)),
+                expiry: cell(columns.expiry),
+                qty: cell(Some(columns.qty)),
+                exported_qty: cell(columns.exported_qty),
+            },
         ));
     }
     if rows.is_empty() {
@@ -301,12 +571,14 @@ fn split_records(text: &str, delimiter: char) -> Result<Vec<(usize, Vec<String>)
 
 /// Finds the columns by name, ignoring case, spaces, symbols and "(Rs)"/"(INR)".
 fn columns_of(header: &[String]) -> Result<Columns, ServiceError> {
+    const LOT: &[&str] = &["lotid"];
     const VENDOR: &[&str] = &["vendorname", "vendor", "pharmavendorname", "pharmavendor", "pharmaname", "pharma", "suppliername", "supplier"];
     const PRODUCT: &[&str] = &["productname", "product", "medicinename", "medicine", "itemname", "item", "name"];
     const MRP: &[&str] = &["mrp", "mrpprice"];
     const BOUGHT: &[&str] = &["clinicboughtprice", "boughtprice", "purchaseprice", "costprice", "clinicprice", "buyingprice"];
-    const EXPIRY: &[&str] = &["expirydate", "expiry", "exp", "expdate", "expiresOn"];
+    const EXPIRY: &[&str] = &["expirydate", "expiry", "exp", "expdate", "expireson"];
     const QTY: &[&str] = &["quantity", "qty", "stock", "units"];
+    const EXPORTED: &[&str] = &["stockwhenexported", "exportedstock"];
     let keys: Vec<String> = header.iter().map(String::as_str).map(header_key).collect();
     let find = |names: &[&str]| keys.iter().position(|k| names.iter().any(|n| n.eq_ignore_ascii_case(k)));
     let (vendor, product, mrp, bought, qty) = (find(VENDOR), find(PRODUCT), find(MRP), find(BOUGHT), find(QTY));
@@ -316,7 +588,9 @@ fn columns_of(header: &[String]) -> Result<Columns, ServiceError> {
         .map(|(_, name)| *name)
         .collect();
     match (vendor, product, mrp, bought, qty) {
-        (Some(vendor), Some(product), Some(mrp), Some(bought), Some(qty)) => Ok(Columns { vendor, product, mrp, bought, expiry: find(EXPIRY), qty }),
+        (Some(vendor), Some(product), Some(mrp), Some(bought), Some(qty)) => {
+            Ok(Columns { lot: find(LOT), vendor, product, mrp, bought, expiry: find(EXPIRY), qty, exported_qty: find(EXPORTED) })
+        }
         _ => Err(invalid(
             "file",
             &format!(
@@ -332,31 +606,54 @@ fn header_key(header: &str) -> String {
     ["inr", "rs"].iter().find_map(|unit| key.strip_suffix(unit).filter(|rest| !rest.is_empty())).map_or(key.clone(), str::to_string)
 }
 
+/// The cells of one row, as text.
+struct RawRow {
+    lot: String,
+    vendor: String,
+    product: String,
+    mrp: String,
+    bought: String,
+    expiry: String,
+    qty: String,
+    exported_qty: String,
+}
+
 /// Checks one row on its own (the database checks come later, in `annotate`).
-fn check_row(line: usize, vendor_name: String, product_name: String, mrp: &str, bought: &str, expiry: &str, qty: &str) -> ImportRow {
+fn check_row(line: usize, raw: RawRow) -> ImportRow {
     let mut errors = Vec::new();
     let mut warnings = Vec::new();
-    if vendor_name.is_empty() {
+    let lot_id = match raw.lot.as_str() {
+        "" => None,
+        text => {
+            let id = parse_qty(text).filter(|id| *id > 0);
+            if id.is_none() {
+                errors.push(format!("Lot ID \"{text}\" is not a lot number from an export. Do not change the Lot ID column."));
+            }
+            id
+        }
+    };
+    // A lot from an export may have no vendor (stock entered before vendors were asked for).
+    if raw.vendor.is_empty() && lot_id.is_none() {
         errors.push("Vendor name is missing.".to_string());
-    } else if vendor_name.chars().count() > 100 {
+    } else if raw.vendor.chars().count() > 100 {
         errors.push("Vendor name is longer than 100 characters.".to_string());
     }
-    if product_name.is_empty() {
+    if raw.product.is_empty() {
         errors.push("Product name is missing.".to_string());
-    } else if product_name.chars().count() > 120 {
+    } else if raw.product.chars().count() > 120 {
         errors.push("Product name is longer than 120 characters.".to_string());
     }
-    let mrp_paise = parse_rupees(mrp);
+    let mrp_paise = parse_rupees(&raw.mrp);
     match mrp_paise {
-        None if mrp.is_empty() => errors.push("MRP is missing.".to_string()),
-        None => errors.push(format!("MRP \"{mrp}\" is not an amount.")),
+        None if raw.mrp.is_empty() => errors.push("MRP is missing.".to_string()),
+        None => errors.push(format!("MRP \"{}\" is not an amount.", raw.mrp)),
         Some(p) if !(1..=100_000_000).contains(&p) => errors.push("MRP must be between ₹0.01 and ₹10,00,000.".to_string()),
         Some(_) => {}
     }
-    let purchase_price_paise = parse_rupees(bought);
+    let purchase_price_paise = parse_rupees(&raw.bought);
     match purchase_price_paise {
-        None if bought.is_empty() => errors.push("Clinic bought price is missing (write 0 if it was free).".to_string()),
-        None => errors.push(format!("Clinic bought price \"{bought}\" is not an amount.")),
+        None if raw.bought.is_empty() => errors.push("Clinic bought price is missing (write 0 if it was free).".to_string()),
+        None => errors.push(format!("Clinic bought price \"{}\" is not an amount.", raw.bought)),
         Some(p) if p > 100_000_000 => errors.push("Clinic bought price must be at most ₹10,00,000.".to_string()),
         Some(_) => {}
     }
@@ -365,29 +662,44 @@ fn check_row(line: usize, vendor_name: String, product_name: String, mrp: &str, 
             warnings.push("Bought price is higher than the MRP. Are the two columns swapped?".to_string());
         }
     }
-    let expiry_date = match parse_expiry_cell(expiry) {
+    let expiry_date = match parse_expiry_cell(&raw.expiry) {
         Ok(date) => date.map(|d| d.to_string()),
         Err(message) => {
             errors.push(message);
             None
         }
     };
-    let qty_value = parse_qty(qty);
-    match qty_value {
-        None if qty.is_empty() => errors.push("Quantity is missing.".to_string()),
-        None => errors.push(format!("Quantity \"{qty}\" must be a whole number.")),
-        Some(0) => errors.push("Quantity must be at least 1.".to_string()),
+    // 0 is allowed for a lot being updated (it is used up); a new delivery needs at least 1.
+    let qty = parse_qty(&raw.qty);
+    match qty {
+        None if raw.qty.is_empty() => errors.push("Quantity is missing.".to_string()),
+        None => errors.push(format!("Quantity \"{}\" must be a whole number.", raw.qty)),
         Some(q) if q > 1_000_000 => errors.push("Quantity must be at most 10,00,000.".to_string()),
         Some(_) => {}
     }
+    let exported_qty = match raw.exported_qty.as_str() {
+        "" => None,
+        text => {
+            let value = parse_qty(text);
+            if value.is_none() {
+                errors.push(format!("Stock When Exported \"{text}\" was changed. Do not change that column."));
+            }
+            value
+        }
+    };
     ImportRow {
         line,
-        vendor_name,
-        product_name,
+        lot_id,
+        vendor_name: raw.vendor,
+        product_name: raw.product,
         mrp_paise,
         purchase_price_paise,
         expiry_date,
-        qty: qty_value,
+        qty,
+        exported_qty,
+        current_qty: None,
+        action: if lot_id.is_some() { RowAction::Unchanged } else { RowAction::Add },
+        changes: Vec::new(),
         new_product: false,
         new_vendor: false,
         errors,
@@ -419,7 +731,7 @@ fn parse_rupees(text: &str) -> Option<i64> {
 fn parse_qty(text: &str) -> Option<i64> {
     let clean: String = text.trim().chars().filter(|c| *c != ',').collect();
     let (whole, frac) = clean.split_once('.').unwrap_or((clean.as_str(), ""));
-    if whole.is_empty() || whole.len() > 7 || !whole.chars().all(|c| c.is_ascii_digit()) || !frac.chars().all(|c| c == '0') {
+    if whole.is_empty() || whole.len() > 12 || !whole.chars().all(|c| c.is_ascii_digit()) || !frac.chars().all(|c| c == '0') {
         return None;
     }
     whole.parse().ok()
@@ -475,7 +787,7 @@ fn parse_expiry_cell(text: &str) -> Result<Option<Date>, String> {
         .ok_or_else(|| format!("Expiry \"{text}\" is not a date. Write it day first, like 31-12-2027, or month and year, like 12-2027."))
 }
 
-/// A short fingerprint of the file's content (FNV-1a), to notice the same file imported twice.
+/// A short fingerprint of the file's content (FNV-1a), to notice the same file added twice.
 fn file_id(text: &str) -> String {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in text.replace("\r\n", "\n").trim().bytes() {
@@ -488,6 +800,10 @@ fn file_id(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn parse(text: &str) -> Result<Vec<ImportRow>, ServiceError> {
+        Ok(parse_file(text)?.1)
+    }
 
     #[test]
     fn amounts_are_read_with_or_without_rupee_signs_and_commas() {
@@ -535,7 +851,7 @@ mod tests {
     fn columns_are_found_by_name_in_any_order() -> Result<(), ServiceError> {
         let header: Vec<String> = ["Qty", "MRP (Rs)", "Product", "Expiry", "Pharma / Vendor Name", "Purchase Price", "Notes"].iter().map(|s| s.to_string()).collect();
         let c = columns_of(&header)?;
-        assert_eq!((c.qty, c.mrp, c.product, c.expiry, c.vendor, c.bought), (0, 1, 2, Some(3), 4, 5));
+        assert_eq!((c.qty, c.mrp, c.product, c.expiry, c.vendor, c.bought, c.lot), (0, 1, 2, Some(3), 4, 5, None));
         let missing = columns_of(&["Product".to_string()]);
         assert!(matches!(missing, Err(ServiceError::Validation { message, .. }) if message.contains("Vendor Name, MRP, Clinic Bought Price, Quantity")));
         Ok(())
@@ -546,15 +862,28 @@ mod tests {
         let text = "Vendor Name,Product Name,MRP,Clinic Bought Price,Expiry Date,Quantity\n\
                     Derma Pharma,Sunscreen SPF 50,650,480,31-12-2027,10\n\
                     Derma Pharma,Soap,120,80,,5\n\
-                    ,Cream,abc,,31-31-2027,0\n\
+                    ,Cream,abc,,31-31-2027,x\n\
                     Derma Pharma,Gel,100,150,,1\n";
-        let (_, rows) = parse_file(text)?;
+        let rows = parse(text)?;
         assert_eq!(rows.len(), 4);
         assert!(rows[0].errors.is_empty() && rows[0].expiry_date.as_deref() == Some("2027-12-31"));
         assert!(rows[1].errors.is_empty() && rows[1].expiry_date.is_none(), "no expiry date is fine");
         assert_eq!(rows[2].line, 4);
         assert_eq!(rows[2].errors.len(), 5, "vendor, MRP, bought price, expiry, quantity: {:?}", rows[2].errors);
         assert!(rows[3].errors.is_empty() && rows[3].warnings.len() == 1, "bought above MRP is only a warning");
+        Ok(())
+    }
+
+    #[test]
+    fn exported_cells_are_safe_in_excel_and_read_back_unchanged() -> Result<(), ServiceError> {
+        assert_eq!(csv_field("=HYPERLINK(\"x\")"), "\"'=HYPERLINK(\"\"x\"\")\"", "a formula becomes plain text");
+        assert_eq!(csv_field("Cream, 50g"), "\"Cream, 50g\"");
+        assert_eq!(csv_field("Soap"), "Soap");
+        assert_eq!(plain_rupees(65_005), "650.05");
+        let line = format!("{EXPORT_HEADER}7,Derma Pharma,{},650.00,480.00,31-12-2027,10,10,\r\n", csv_field("-Gel"));
+        let rows = parse(&line)?;
+        assert_eq!((rows[0].lot_id, rows[0].product_name.as_str(), rows[0].exported_qty), (Some(7), "-Gel", Some(10)));
+        assert!(rows[0].errors.is_empty(), "{:?}", rows[0].errors);
         Ok(())
     }
 

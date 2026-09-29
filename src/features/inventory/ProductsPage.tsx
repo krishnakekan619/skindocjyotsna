@@ -20,7 +20,7 @@ import {
   ToggleButtonGroup,
   Typography,
 } from '@mui/material';
-import { api, type BatchRow, type ProductRow, type StockFilter } from '../../api';
+import { api, errorMessage, type BatchRow, type ProductRow, type StockFilter } from '../../api';
 import { useApp } from '../../app/AppContext';
 import { ConfirmDialog, EmptyState, ErrorAlert, Loading, PageHeader, StatusChip, useLoader, rowActions } from '../../components/common';
 import { t } from '../../i18n/en';
@@ -47,6 +47,13 @@ export function ProductsPage() {
   const [editing, setEditing] = useState<ProductRow | null>(null);
   const [adding, setAdding] = useState(false);
   const [importing, setImporting] = useState(false);
+  const exportStock = async () => {
+    try {
+      notify(t.stockImport.exported(await api.exportStockCsv()));
+    } catch (e) {
+      notify(errorMessage(e, t.stockImport.exportFailed), 'error');
+    }
+  };
   const [deleting, setDeleting] = useState<ProductRow | null>(null);
   const [detail, setDetail] = useState<number | null>(null);
 
@@ -74,9 +81,14 @@ export function ProductsPage() {
         actions={
           <Stack direction="row" spacing={1}>
             {isAdmin && (
-              <Button variant="outlined" onClick={() => setImporting(true)}>
-                {t.stockImport.button}
-              </Button>
+              <>
+                <Button variant="outlined" onClick={() => void exportStock()}>
+                  {t.stockImport.exportButton}
+                </Button>
+                <Button variant="outlined" onClick={() => setImporting(true)}>
+                  {t.stockImport.button}
+                </Button>
+              </>
             )}
             <Button variant="contained" onClick={() => setAdding(true)}>
               + {t.products.addInventory}
@@ -197,7 +209,7 @@ export function ProductsPage() {
           onClose={() => setImporting(false)}
           onImported={(r) => {
             setImporting(false);
-            notify(t.stockImport.imported(r.rows, r.totalQty));
+            notify(t.stockImport.imported(r.added, r.updated));
             reload();
             suppliers.reload();
           }}

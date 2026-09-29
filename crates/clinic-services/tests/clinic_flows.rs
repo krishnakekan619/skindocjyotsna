@@ -8,7 +8,7 @@ use clinic_services::auth::{self, NewAccount, SetupInput};
 use clinic_services::billing::{self, Approval, BillInput, BillLineInput, CorrectionInput, NewClientInput, PaymentInput, ReturnInput, ReturnLineInput, ServiceLineInput};
 use clinic_services::catalog::{self, ServiceInput};
 use clinic_services::share;
-use clinic_services::stock_import;
+use clinic_services::stock_import::{self, ImportMode};
 use clinic_services::clients::{self, ClientInput};
 use clinic_services::inventory::{self, AdjustInput, ProductFilter, ProductInput, StockInInput};
 use clinic_services::reports::{self, DateRange};
@@ -934,27 +934,27 @@ Skin Labs,Paracetamol 500mg,25,15,12-2027,50
 fn a_csv_file_imports_every_delivery_at_once_and_only_once() -> TestResult {
     let mut clinic = clinic()?;
     let before = sellable(&clinic, clinic.paracetamol)?;
-    assert!(matches!(stock_import::preview(&clinic.db, &clinic.reception, STOCK_CSV, NOW), Err(ServiceError::PermissionDenied)), "administrators only");
+    assert!(matches!(stock_import::preview(&clinic.db, &clinic.reception, STOCK_CSV, ImportMode::Add, NOW), Err(ServiceError::PermissionDenied)), "administrators only");
 
-    let preview = stock_import::preview(&clinic.db, &clinic.owner, STOCK_CSV, NOW)?;
-    assert_eq!((preview.rows.len(), preview.error_rows, preview.total_qty), (3, 0, 84));
+    let preview = stock_import::preview(&clinic.db, &clinic.owner, STOCK_CSV, ImportMode::Add, NOW)?;
+    assert_eq!((preview.rows.len(), preview.error_rows, preview.added, preview.total_qty), (3, 0, 3, 84));
     assert_eq!((preview.new_products, preview.new_vendors), (2, 2), "Paracetamol exists; 'derma pharma' is the same vendor");
     assert_eq!(preview.imported_before_at, None);
 
-    let done = stock_import::import(&mut clinic.db, &clinic.owner, STOCK_CSV, "import-key-0001", false, NOW)?;
-    assert_eq!((done.rows, done.new_products, done.new_vendors, done.total_qty), (3, 2, 2, 84));
+    let done = stock_import::import(&mut clinic.db, &clinic.owner, STOCK_CSV, ImportMode::Add, "import-key-0001", false, NOW)?;
+    assert_eq!((done.added, done.new_products, done.new_vendors, done.total_qty), (3, 2, 2, 84));
     assert_eq!(sellable(&clinic, clinic.paracetamol)?, before + 50);
     let soap = inventory::list_products(&clinic.db, &clinic.owner, ProductFilter { text: "Moisturising".into(), ..Default::default() }, NOW)?;
     assert_eq!(soap.first().map(|p| (p.sellable_qty, p.next_expiry.clone())), Some((24, None)), "no expiry date is allowed");
     assert_eq!(inventory::list_suppliers(&clinic.db, &clinic.owner)?.iter().filter(|s| s.name.eq_ignore_ascii_case("derma pharma")).count(), 1);
 
     // A double-click or retry of the same request adds nothing.
-    stock_import::import(&mut clinic.db, &clinic.owner, STOCK_CSV, "import-key-0001", false, NOW)?;
+    stock_import::import(&mut clinic.db, &clinic.owner, STOCK_CSV, ImportMode::Add, "import-key-0001", false, NOW)?;
     assert_eq!(sellable(&clinic, clinic.paracetamol)?, before + 50);
     // The same file again is noticed and refused unless confirmed.
-    assert!(stock_import::preview(&clinic.db, &clinic.owner, STOCK_CSV, NOW)?.imported_before_at.is_some());
-    assert!(matches!(stock_import::import(&mut clinic.db, &clinic.owner, STOCK_CSV, "import-key-0002", false, NOW), Err(ServiceError::Conflict(_))));
-    stock_import::import(&mut clinic.db, &clinic.owner, STOCK_CSV, "import-key-0003", true, NOW)?;
+    assert!(stock_import::preview(&clinic.db, &clinic.owner, STOCK_CSV, ImportMode::Add, NOW)?.imported_before_at.is_some());
+    assert!(matches!(stock_import::import(&mut clinic.db, &clinic.owner, STOCK_CSV, ImportMode::Add, "import-key-0002", false, NOW), Err(ServiceError::Conflict(_))));
+    stock_import::import(&mut clinic.db, &clinic.owner, STOCK_CSV, ImportMode::Add, "import-key-0003", true, NOW)?;
     assert_eq!(sellable(&clinic, clinic.paracetamol)?, before + 100);
     assert_ledger_consistent(&clinic)
 }
@@ -965,11 +965,74 @@ fn a_csv_file_with_any_wrong_row_imports_nothing() -> TestResult {
     let before = sellable(&clinic, clinic.paracetamol)?;
     let text = format!("{STOCK_CSV}Derma Pharma,Old Cream,100,60,01-01-2020,5
 ");
-    let preview = stock_import::preview(&clinic.db, &clinic.owner, &text, NOW)?;
+    let preview = stock_import::preview(&clinic.db, &clinic.owner, &text, ImportMode::Add, NOW)?;
     assert_eq!(preview.error_rows, 1);
     assert!(preview.rows[3].errors.iter().any(|e| e.contains("already passed")));
-    assert!(matches!(stock_import::import(&mut clinic.db, &clinic.owner, &text, "import-key-0010", false, NOW), Err(ServiceError::NotAllowed(_))));
+    assert!(matches!(stock_import::import(&mut clinic.db, &clinic.owner, &text, ImportMode::Add, "import-key-0010", false, NOW), Err(ServiceError::NotAllowed(_))));
     assert_eq!(sellable(&clinic, clinic.paracetamol)?, before, "the good rows were not imported either");
     assert!(inventory::list_products(&clinic.db, &clinic.owner, ProductFilter { text: "Sunscreen".into(), ..Default::default() }, NOW)?.is_empty());
     Ok(())
+}
+
+fn exported_rows(clinic: &Clinic) -> Result<Vec<Vec<String>>, ServiceError> {
+    let export = stock_import::export(&clinic.db, &clinic.owner, NOW)?;
+    Ok(export.csv.trim_start_matches('\u{feff}').lines().skip(1).map(|l| l.split(',').map(str::to_string).collect()).collect())
+}
+
+const EXPORT_HEADER: &str = "Lot ID,Vendor Name,Product Name,MRP,Clinic Bought Price,Expiry Date,Quantity,Stock When Exported,Status\r\n";
+
+#[test]
+fn the_stock_exports_to_csv_and_an_edited_export_updates_it() -> TestResult {
+    let mut clinic = clinic()?;
+    assert!(matches!(stock_import::export(&clinic.db, &clinic.reception, NOW), Err(ServiceError::PermissionDenied)), "administrators only");
+    let export = stock_import::export(&clinic.db, &clinic.owner, NOW)?;
+    assert!(export.csv.starts_with(&format!("\u{feff}{EXPORT_HEADER}")));
+    assert_eq!(export.rows, 2, "one row per lot with stock");
+    let rows = exported_rows(&clinic)?;
+    let para = rows.iter().find(|r| r[2] == "Paracetamol 500mg").cloned().ok_or(ServiceError::NotFound("row"))?;
+    assert_eq!(&para[3..8], ["20.00", "10.00", "30-06-2027", "100", "100"]);
+
+    // Adding an export again would count the stock twice: refused in Add mode.
+    let file = |qty: &str, mrp: &str| format!("{EXPORT_HEADER}{},,Paracetamol 500mg,{mrp},10.00,30-06-2027,{qty},100,\r\n", para[0]);
+    let as_add = stock_import::preview(&clinic.db, &clinic.owner, &file("100", "20.00"), ImportMode::Add, NOW)?;
+    assert_eq!(as_add.error_rows, 1);
+
+    // Update mode: the stock count and the MRP change; the ledger records an adjustment.
+    let edited = file("90", "22.00");
+    let preview = stock_import::preview(&clinic.db, &clinic.owner, &edited, ImportMode::Update, NOW)?;
+    assert_eq!((preview.error_rows, preview.updated, preview.added), (0, 1, 0), "{:?}", preview.rows[0].errors);
+    assert_eq!(preview.rows[0].changes, vec!["Quantity 100 → 90".to_string(), "MRP ₹20.00 → ₹22.00".to_string()]);
+    let done = stock_import::import(&mut clinic.db, &clinic.owner, &edited, ImportMode::Update, "update-key-0001", false, NOW)?;
+    assert_eq!((done.updated, done.added), (1, 0));
+    assert_eq!(sellable(&clinic, clinic.paracetamol)?, 90);
+    assert_eq!(exported_rows(&clinic)?.iter().find(|r| r[2] == "Paracetamol 500mg").map(|r| r[3].clone()).as_deref(), Some("22.00"));
+    assert_ledger_consistent(&clinic)?;
+
+    // The same file again changes nothing (the stock is already 90).
+    let again = stock_import::preview(&clinic.db, &clinic.owner, &edited, ImportMode::Update, NOW)?;
+    assert_eq!((again.error_rows, again.updated, again.unchanged), (0, 0, 1));
+
+    // A sale since the export: the old count would undo it, so the row is refused.
+    billing::finalize(&mut clinic.db, &clinic.reception, bill("bill-key-0200", vec![line(clinic.paracetamol, 5)], Discount::None, cash(11_000)), NOW)?;
+    let stale = format!("{EXPORT_HEADER}{},,Paracetamol 500mg,22.00,10.00,30-06-2027,80,90,\r\n", para[0]);
+    let refused = stock_import::preview(&clinic.db, &clinic.owner, &stale, ImportMode::Update, NOW)?;
+    assert!(refused.rows[0].errors.iter().any(|e| e.contains("changed since the export")));
+    assert!(matches!(stock_import::import(&mut clinic.db, &clinic.owner, &stale, ImportMode::Update, "update-key-0002", false, NOW), Err(ServiceError::NotAllowed(_))));
+    assert_eq!(sellable(&clinic, clinic.paracetamol)?, 85);
+    Ok(())
+}
+
+#[test]
+fn an_update_file_can_also_add_new_deliveries_and_empty_a_lot() -> TestResult {
+    let mut clinic = clinic()?;
+    let rows = exported_rows(&clinic)?;
+    let cream = rows.iter().find(|r| r[2] == "Pain Relief Cream").cloned().ok_or(ServiceError::NotFound("row"))?;
+    let text = format!(
+        "{EXPORT_HEADER}{},,Pain Relief Cream,120.00,60.00,31-12-2027,0,10,\r\n,Derma Pharma,Sunscreen SPF 50,650,480,31-12-2027,6,,\r\n",
+        cream[0]
+    );
+    let done = stock_import::import(&mut clinic.db, &clinic.owner, &text, ImportMode::Update, "update-key-0010", false, NOW)?;
+    assert_eq!((done.updated, done.added, done.total_qty), (1, 1, 6));
+    assert_eq!(sellable(&clinic, clinic.cream)?, 0, "used up: set to 0");
+    assert_ledger_consistent(&clinic)
 }

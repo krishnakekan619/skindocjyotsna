@@ -16,9 +16,11 @@ import {
   TableCell,
   TableHead,
   TableRow,
+  ToggleButton,
+  ToggleButtonGroup,
   Typography,
 } from '@mui/material';
-import { api, type ImportPreview, type ImportResult } from '../../api';
+import { api, type ImportMode, type ImportPreview, type ImportResult } from '../../api';
 import { ErrorAlert } from '../../components/common';
 import { t } from '../../i18n/en';
 import { formatDateTime, formatIsoDate, newBillKey } from '../../lib/dates';
@@ -35,6 +37,7 @@ const EXAMPLE = [
  * then import all rows at once. Nothing is imported while any row has a problem.
  */
 export function ImportStockDialog({ onImported, onClose }: { onImported: (r: ImportResult) => void; onClose: () => void }) {
+  const [mode, setMode] = useState<ImportMode>('ADD');
   const [fileName, setFileName] = useState('');
   const [text, setText] = useState<string | null>(null);
   const [preview, setPreview] = useState<ImportPreview | null>(null);
@@ -55,25 +58,38 @@ export function ImportStockDialog({ onImported, onClose }: { onImported: (r: Imp
     }
   };
 
-  const choose = async (e: ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    e.target.value = ''; // the same file can be chosen again after fixing it
-    if (!file) return;
+  const check = async (content: string, as: ImportMode) => {
     setError(null);
     setPreview(null);
     setImportAgain(false);
-    setFileName(file.name);
     setBusy(true);
     try {
-      const content = await file.text();
-      setText(content);
-      setPreview(await api.previewStockImport(content));
+      setPreview(await api.previewStockImport(content, as));
     } catch (err) {
-      setText(null);
       setError(err);
     } finally {
       setBusy(false);
     }
+  };
+
+  const choose = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // the same file can be chosen again after fixing it
+    if (!file) return;
+    setFileName(file.name);
+    try {
+      const content = await file.text();
+      setText(content);
+      await check(content, mode);
+    } catch (err) {
+      setText(null);
+      setError(err);
+    }
+  };
+
+  const changeMode = (next: ImportMode) => {
+    setMode(next);
+    if (text !== null) void check(text, next); // the same file, checked again for the new choice
   };
 
   const importAll = async () => {
@@ -82,7 +98,7 @@ export function ImportStockDialog({ onImported, onClose }: { onImported: (r: Imp
     setBusy(true);
     setError(null);
     try {
-      onImported(await api.importStock(text, requestKey, importAgain));
+      onImported(await api.importStock(text, mode, requestKey, importAgain));
     } catch (e) {
       setError(e);
     } finally {
@@ -92,14 +108,34 @@ export function ImportStockDialog({ onImported, onClose }: { onImported: (r: Imp
   };
 
   const repeated = preview?.importedBeforeAt ?? null;
-  const canImport = !busy && preview !== null && preview.errorRows === 0 && (repeated === null || importAgain);
+  const toSave = preview ? preview.added + preview.updated : 0;
+  const canImport = !busy && preview !== null && preview.errorRows === 0 && toSave > 0 && (repeated === null || importAgain);
 
   return (
     <Dialog open onClose={busy ? undefined : onClose} maxWidth="lg" fullWidth>
       <DialogTitle>{t.stockImport.title}</DialogTitle>
       <DialogContent>
         <Stack spacing={2}>
-          {!preview && (
+          <Stack spacing={0.5}>
+            <Typography sx={{ fontWeight: 600 }}>{t.stockImport.modeLabel}</Typography>
+            <ToggleButtonGroup exclusive value={mode} disabled={busy} onChange={(_, v: ImportMode | null) => v && changeMode(v)}>
+              <ToggleButton value="ADD">{t.stockImport.modes.ADD}</ToggleButton>
+              <ToggleButton value="UPDATE">{t.stockImport.modes.UPDATE}</ToggleButton>
+            </ToggleButtonGroup>
+            <Typography variant="body2" color="text.secondary">
+              {t.stockImport.modeHints[mode]}
+            </Typography>
+          </Stack>
+          {!preview && mode === 'UPDATE' && (
+            <Box component="ul" sx={{ m: 0, pl: 2.5, '& li': { mb: 0.5 } }}>
+              {t.stockImport.updateRules.map((rule) => (
+                <li key={rule}>
+                  <Typography variant="body2">{rule}</Typography>
+                </li>
+              ))}
+            </Box>
+          )}
+          {!preview && mode === 'ADD' && (
             <>
               <Typography>{t.stockImport.intro}</Typography>
               <Box sx={{ overflowX: 'auto' }}>
@@ -154,9 +190,7 @@ export function ImportStockDialog({ onImported, onClose }: { onImported: (r: Imp
               {preview.errorRows > 0 ? (
                 <Alert severity="error">{t.stockImport.hasErrors(preview.errorRows)}</Alert>
               ) : (
-                <Alert severity="success">
-                  {t.stockImport.ready(preview.rows.length, preview.totalQty, preview.newProducts, preview.newVendors)}
-                </Alert>
+                <Alert severity="success">{t.stockImport.ready(preview.added, preview.updated, preview.unchanged, preview.totalQty)}</Alert>
               )}
               {repeated !== null && (
                 <Alert severity="warning">
@@ -171,6 +205,7 @@ export function ImportStockDialog({ onImported, onClose }: { onImported: (r: Imp
                   <TableHead>
                     <TableRow>
                       <TableCell>{t.stockImport.line}</TableCell>
+                      {mode === 'UPDATE' && <TableCell>{t.stockImport.lotId}</TableCell>}
                       <TableCell>{t.products.vendor}</TableCell>
                       <TableCell>{t.products.name}</TableCell>
                       <TableCell align="right">{t.products.mrp}</TableCell>
@@ -184,6 +219,7 @@ export function ImportStockDialog({ onImported, onClose }: { onImported: (r: Imp
                     {preview.rows.map((r) => (
                       <TableRow key={r.line} sx={r.errors.length > 0 ? { bgcolor: 'rgba(180, 88, 90, 0.08)' } : undefined}>
                         <TableCell>{r.line}</TableCell>
+                        {mode === 'UPDATE' && <TableCell>{r.lotId ?? '—'}</TableCell>}
                         <TableCell>
                           {r.vendorName || '—'} {r.newVendor && <Chip size="small" label={t.stockImport.newTag} />}
                         </TableCell>
@@ -195,7 +231,15 @@ export function ImportStockDialog({ onImported, onClose }: { onImported: (r: Imp
                         <TableCell>{r.expiryDate ? formatIsoDate(r.expiryDate) : t.stockImport.noExpiry}</TableCell>
                         <TableCell align="right">{r.qty ?? '—'}</TableCell>
                         <TableCell>
-                          {r.errors.length === 0 && r.warnings.length === 0 && <Chip size="small" color="success" label={t.stockImport.ok} />}
+                          {r.errors.length === 0 && (
+                            <Chip size="small" color={r.action === 'UNCHANGED' ? 'default' : 'success'} label={t.stockImport.actions[r.action]} />
+                          )}
+                          {r.errors.length === 0 &&
+                            r.changes.map((m) => (
+                              <Typography key={m} variant="body2">
+                                {m}
+                              </Typography>
+                            ))}
                           {r.errors.map((m) => (
                             <Typography key={m} variant="body2" color="error">
                               {m}
@@ -221,7 +265,7 @@ export function ImportStockDialog({ onImported, onClose }: { onImported: (r: Imp
           {t.common.cancel}
         </Button>
         <Button variant="contained" onClick={() => void importAll()} disabled={!canImport}>
-          {preview ? t.stockImport.importRows(preview.rows.length) : t.stockImport.importRows(0)}
+          {t.stockImport.importRows(toSave)}
         </Button>
       </DialogActions>
     </Dialog>

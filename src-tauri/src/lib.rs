@@ -186,6 +186,7 @@ pub fn run() {
             commands::inventory::preview_stock_import,
             commands::inventory::import_stock,
             commands::inventory::open_stock_import_template,
+            commands::inventory::export_stock_csv,
             commands::inventory::delete_product,
             commands::inventory::adjust_stock,
             commands::inventory::list_stock_ledger,

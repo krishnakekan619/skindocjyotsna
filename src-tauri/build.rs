@@ -34,6 +34,7 @@ const COMMANDS: &[&str] = &[
     "preview_stock_import",
     "import_stock",
     "open_stock_import_template",
+    "export_stock_csv",
     "delete_product",
     "adjust_stock",
     "list_stock_ledger",

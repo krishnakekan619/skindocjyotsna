@@ -5,7 +5,7 @@ use clinic_services::inventory::{
     self, AddInventoryInput, AdjustInput, CategoryInput, DeleteOutcome, ExpiringBatch, ProductDetail, ProductFilter, ProductInput, SaleProduct, StockInInput,
     SupplierInput,
 };
-use clinic_services::stock_import::{self, ImportPreview, ImportResult};
+use clinic_services::stock_import::{self, ImportMode, ImportPreview, ImportResult};
 use clinic_sqlite::repo::inventory::{BatchRow, Category, LedgerRow, ProductRow, Supplier};
 use tauri::State;
 
@@ -99,16 +99,34 @@ pub fn add_inventory(state: State<'_, AppState>, input: AddInventoryInput) -> Re
 
 /// Inventory → Import from CSV (administrators): checks every row of the file, changes nothing.
 #[tauri::command(async)]
-pub fn preview_stock_import(state: State<'_, AppState>, text: String) -> Result<ImportPreview, CommandError> {
+pub fn preview_stock_import(state: State<'_, AppState>, text: String, mode: ImportMode) -> Result<ImportPreview, CommandError> {
     let session = state.session(Permission::ManageInventory)?;
-    Ok(stock_import::preview(&*state.db()?, &session, &text, now())?)
+    Ok(stock_import::preview(&*state.db()?, &session, &text, mode, now())?)
 }
 
 /// Imports every row of a checked file in one transaction: all rows or none.
 #[tauri::command(async)]
-pub fn import_stock(state: State<'_, AppState>, text: String, request_key: String, import_again: bool) -> Result<ImportResult, CommandError> {
+pub fn import_stock(state: State<'_, AppState>, text: String, mode: ImportMode, request_key: String, import_again: bool) -> Result<ImportResult, CommandError> {
     let session = state.session(Permission::ManageInventory)?;
-    Ok(stock_import::import(&mut *state.db()?, &session, &text, &request_key, import_again, now())?)
+    Ok(stock_import::import(&mut *state.db()?, &session, &text, mode, &request_key, import_again, now())?)
+}
+
+/// Inventory → Export to CSV (administrators): the stock in hand, one row per lot, saved in the
+/// exports folder and opened (normally in Excel). Returns where it was saved.
+#[tauri::command(async)]
+pub fn export_stock_csv(state: State<'_, AppState>) -> Result<String, CommandError> {
+    let session = state.session(Permission::ManageInventory)?;
+    let export = stock_import::export(&*state.db()?, &session, now())?;
+    let path = state.paths.export_dir.join(&export.file_name);
+    std::fs::write(&path, export.csv).map_err(|error| {
+        tracing::error!(%error, path = %path.display(), "could not write the stock export");
+        CommandError::user("EXPORT_FAILED", "The file could not be saved. Check that the disk is not full, and close it in Excel if it is open.")
+    })?;
+    tauri_plugin_opener::open_path(&path, None::<&str>).map_err(|error| {
+        tracing::error!(%error, "could not open the stock export");
+        CommandError::user("OPEN_FAILED", "The file was saved in the exports folder but could not be opened. Is Excel installed?")
+    })?;
+    Ok(path.display().to_string())
 }
 
 /// Saves the empty import sheet (just the column names) in the exports folder and opens it,

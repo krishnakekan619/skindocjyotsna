@@ -153,15 +153,27 @@ export interface ProductFilter {
   limit?: number;
 }
 
+/** stock_import::ImportMode: every row a new delivery, or rows with a Lot ID update that lot. */
+export type ImportMode = 'ADD' | 'UPDATE';
+export type ImportRowAction = 'ADD' | 'UPDATE' | 'UNCHANGED';
+
 /** stock_import::ImportRow: one row of an import file as understood, with its problems. */
 export interface ImportRow {
   line: number;
+  /** The lot this row came from (an exported file). */
+  lotId: number | null;
   vendorName: string;
   productName: string;
   mrpPaise: Paise | null;
   purchasePricePaise: Paise | null;
   expiryDate: IsoDate | null;
   qty: number | null;
+  exportedQty: number | null;
+  /** The lot's stock now (Update rows). */
+  currentQty: number | null;
+  action: ImportRowAction;
+  /** What an Update row changes, e.g. "Quantity 10 → 7". */
+  changes: string[];
   newProduct: boolean;
   newVendor: boolean;
   errors: string[];
@@ -170,9 +182,13 @@ export interface ImportRow {
 
 /** stock_import::ImportPreview */
 export interface ImportPreview {
+  mode: ImportMode;
   fileId: string;
   rows: ImportRow[];
   errorRows: number;
+  added: number;
+  updated: number;
+  unchanged: number;
   newProducts: number;
   newVendors: number;
   totalQty: number;
@@ -182,7 +198,9 @@ export interface ImportPreview {
 
 /** stock_import::ImportResult */
 export interface ImportResult {
-  rows: number;
+  added: number;
+  updated: number;
+  unchanged: number;
   newProducts: number;
   newVendors: number;
   totalQty: number;

@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.4.4 (unreleased): inventory export and update from CSV (2026-09-29)
+
+- **Export CSV** (Inventory, administrators) saves the stock in hand as a CSV file and opens it in Excel.
+  - One row per lot: Lot ID, Vendor Name, Product Name, MRP, Clinic Bought Price, Expiry Date, Quantity, Stock When Exported, Status.
+  - Expired and soon-expiring lots are marked in Status.
+- **Import CSV** now asks what the file contains:
+  - **New deliveries:** as before. A row from an export (with a Lot ID) is refused, so stock is never counted twice.
+  - **Changes to my stock:** edit an export in Excel and import it back.
+    - Changed quantities (0 = used up) are recorded as stock adjustments. Changed MRP, bought price and expiry are saved on the lot.
+    - Rows without a Lot ID are added as new deliveries.
+    - The preview lists every change.
+- **Safety:**
+  - A lot sold from or returned to since the export is refused, so an old count never undoes a sale.
+  - Importing the same edited file again changes nothing.
+  - Product names are exported so they can never run as Excel formulas.
+- **Limits:** up to 5,000 rows per file.
+
 ## v0.4.3 (2026-09-28): faster bill entry and stock import from CSV
 
 ### New Bill
