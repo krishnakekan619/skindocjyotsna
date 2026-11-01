@@ -19,7 +19,7 @@ argon2 = "0.6"
 # default-features off: skips the HTML layout engine; we position text ourselves.
 printpdf = { version = "0.12", default-features = false }
 # "bundled" compiles SQLite into the app: same SQLite version on Windows and macOS, nothing to install.
-rusqlite = { version = "0.40", features = ["bundled", "backup"] }
+rusqlite = { version = "0.41", features = ["bundled", "backup"] }
 rusqlite_migration = "2.6"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
